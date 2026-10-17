@@ -194,6 +194,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         db.execSQL("INSERT INTO chat(role,text,at) VALUES(?,?,?)", arrayOf("assistant", text, System.currentTimeMillis()))
         status.text = if (listening) "● LISTENING" else "● IDLE · READY"
         if (voiceReady) voice.speak(text, TextToSpeech.QUEUE_FLUSH, null, "jarvis-reply")
+        // Resume recognition after the spoken reply so follow-up questions do not need a wake word.
+        if (listening) root.postDelayed({ if (listening) listenOnce() }, (text.length * 48L).coerceIn(1200L, 12000L))
     }
 
     private fun startListening() {
