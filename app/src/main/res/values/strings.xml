@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Zara AI</string>
+    <string name="a11y_label">Zara AI actions</string>
+    <string name="a11y_description">Lets Zara AI tap, scroll and type in other apps only when you ask it to, and confirm what happened. It does not record or upload your screen.</string>
+</resources>

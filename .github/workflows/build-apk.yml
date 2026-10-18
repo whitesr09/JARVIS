@@ -1,8 +1,9 @@
-name: Build JARVIS APK
+name: Build Zara AI APK
 
 on:
   push:
     branches: ["main"]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -38,7 +39,11 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: jarvis-debug-apk
+          name: zara-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+      # Runs after the APK is uploaded so a test failure is visible (red run) without hiding the build output.
+      - name: Run unit tests
+        run: gradle --no-daemon test

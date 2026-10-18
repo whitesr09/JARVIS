@@ -2,290 +2,337 @@ package com.nshd.jarvis
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.graphics.Color
+import android.content.res.Configuration
+import android.net.Uri
 import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
-import android.speech.tts.TextToSpeech
-import android.view.View
 import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
 import android.widget.*
-import org.json.JSONArray
-import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
-import java.util.Locale
-import java.util.concurrent.Executors
 
-class MainActivity : Activity(), TextToSpeech.OnInitListener {
-    private val cyan = Color.rgb(0, 220, 255)
-    private val executor = Executors.newSingleThreadExecutor()
-    private lateinit var root: LinearLayout
-    private lateinit var transcript: TextView
-    private lateinit var status: TextView
-    private lateinit var entry: EditText
-    private lateinit var voice: TextToSpeech
-    private var recognizer: SpeechRecognizer? = null
-    private var listening = false
-    private var voiceReady = false
-    private val prefs by lazy { getSharedPreferences("jarvis", MODE_PRIVATE) }
-    private val db by lazy { openOrCreateDatabase("jarvis.db", MODE_PRIVATE, null) }
+class MainActivity : Activity(), BrainListener {
+    lateinit var prefs: Prefs
+    lateinit var db: ZDb
+    lateinit var voice: ZVoice
+    lateinit var executor: ActionExecutor
+    lateinit var brain: Brain
+    lateinit var theme: ZTheme
+    lateinit var ui: Ui
+    var partial = ""
+
+    // Code workspace state (kept in memory only)
+    var codeName = "main.kt"
+    var codeLang = "Kotlin"
+    var codeText = ""
+    var codeUri: Uri? = null
+    var codeStatus = "Only inside Zara (not saved yet)"
+
+    private val screens = ArrayList<Screen>()
+    private var tabIndex = 0
+    private lateinit var rootView: LinearLayout
+    private lateinit var content: FrameLayout
+    private lateinit var navBar: LinearLayout
+    private var resumedNow = false
+    private var pendingConfirm: (() -> Unit)? = null
+    private var pendingVoice = false
+    private val navItems = ArrayList<Pair<LinearLayout, IconView>>()
+    private var micFab: FrameLayout? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = Color.BLACK
-        window.navigationBarColor = Color.BLACK
-        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LOW_PROFILE
-        db.execSQL("CREATE TABLE IF NOT EXISTS chat(id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT, text TEXT, at INTEGER)")
-        db.execSQL("CREATE TABLE IF NOT EXISTS memories(id INTEGER PRIMARY KEY AUTOINCREMENT, fact TEXT UNIQUE)")
-        voice = TextToSpeech(this, this)
-        buildUi()
-        add("JARVIS", "Systems online. Tap START SESSION and talk naturally; you do not need to say Jarvis before each command.")
+        prefs = Prefs(this)
+        SecureStore.migrateLegacy(this, prefs)
+        db = ZDb(this)
+        voice = ZVoice(this, prefs)
+        executor = ActionExecutor(this, prefs)
+        brain = Brain(this)
+        wireVoice()
+        brain.listeners.add(this)
+        applyTheme(initial = true)
+        if (!prefs.b("onboarded", false)) go(OnboardingScreen())
+        if (prefs.b("overlay_on", false) && OverlayService.canDraw(this)) OverlayService.start(this)
     }
 
-    private fun buildUi() {
-        root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(20, 24, 20, 18)
-            setBackgroundColor(Color.BLACK)
-        }
-        val title = TextView(this).apply {
-            text = "J A R V I S"
-            textSize = 27f
-            gravity = Gravity.CENTER
-            setTextColor(cyan)
-            setPadding(0, 12, 0, 4)
-        }
-        status = TextView(this).apply {
-            text = "● IDLE · READY"
-            textSize = 12f
-            gravity = Gravity.CENTER
-            setTextColor(Color.LTGRAY)
-            setPadding(0, 4, 0, 16)
-        }
-        transcript = TextView(this).apply {
-            textSize = 15f
-            setTextColor(Color.rgb(230, 240, 245))
-            setPadding(12, 12, 12, 12)
-        }
-        val scroller = ScrollView(this).apply {
-            addView(transcript)
-            setBackgroundColor(Color.rgb(10, 16, 23))
-        }
-        entry = EditText(this).apply {
-            hint = "Type a message…"
-            setHintTextColor(Color.GRAY)
-            setTextColor(Color.WHITE)
-            setSingleLine(false)
-            setBackgroundColor(Color.rgb(18, 25, 34))
-        }
-        val send = button("SEND") { val text = entry.text.toString().trim(); if (text.isNotEmpty()) { entry.setText(""); handle(text) } }
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; addView(entry, LinearLayout.LayoutParams(0, -2, 1f)); addView(send) }
-        root.addView(title)
-        root.addView(status)
-        root.addView(scroller, LinearLayout.LayoutParams(-1, 0, 1f))
-        root.addView(row)
-        root.addView(button("START SESSION") { startListening() })
-        val tools = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(button("API KEY") { keyDialog() }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(button("MEMORY") { memoryDialog() }, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(button("STOP") { stopListening() }, LinearLayout.LayoutParams(0, -2, 1f))
-        }
-        root.addView(tools)
-        setContentView(root)
-    }
-
-    private fun button(label: String, action: () -> Unit) = Button(this).apply {
-        text = label
-        textSize = 11f
-        setTextColor(cyan)
-        setBackgroundColor(Color.rgb(12, 22, 31))
-        setOnClickListener { action() }
-    }
-
-    private fun add(who: String, text: String) {
-        transcript.append("\n$who\n$text\n")
-        transcript.post { (transcript.parent as? ScrollView)?.fullScroll(View.FOCUS_DOWN) }
-    }
-
-    private fun handle(raw: String) {
-        val text = raw.trim()
-        if (text.isEmpty()) return
-        add("YOU", text)
-        db.execSQL("INSERT INTO chat(role,text,at) VALUES(?,?,?)", arrayOf("user", text, System.currentTimeMillis()))
-        val remember = Regex("(?i)^remember that (.+)$").find(text)
-        if (remember != null) {
-            val fact = remember.groupValues[1].trim()
-            db.execSQL("INSERT OR IGNORE INTO memories(fact) VALUES(?)", arrayOf(fact))
-            reply("Got it. I saved that in local memory.")
-            return
-        }
-        if (text.equals("what do you remember", true) || text.equals("what do you remember?", true)) {
-            val c = db.rawQuery("SELECT fact FROM memories ORDER BY id DESC LIMIT 30", null)
-            val list = mutableListOf<String>()
-            while (c.moveToNext()) list.add(c.getString(0))
-            c.close()
-            reply(if (list.isEmpty()) "I have no saved memories yet." else "Here's what I remember: " + list.joinToString("; "))
-            return
-        }
-        val action = Regex("(?i)^(open|launch|start)\\s+(youtube|chrome|maps|gmail|whatsapp|settings)$").find(text)
-        if (action != null) {
-            val name = action.groupValues[2].lowercase(Locale.ROOT)
-            try {
-                if (name == "settings") startActivity(Intent(android.provider.Settings.ACTION_SETTINGS))
-                else {
-                    val pkg = mapOf("youtube" to "com.google.android.youtube", "chrome" to "com.android.chrome", "maps" to "com.google.android.apps.maps", "gmail" to "com.google.android.gm", "whatsapp" to "com.whatsapp")[name]!!
-                    val intent = packageManager.getLaunchIntentForPackage(pkg)
-                    if (intent == null) { reply("$name does not appear to be installed."); return }
-                    startActivity(intent)
-                }
-                reply("Opening $name.")
-            } catch (_: Exception) { reply("I couldn't open $name on this device.") }
-            return
-        }
-        askAI(text)
-    }
-
-    private fun askAI(prompt: String) {
-        val key = prefs.getString("api_key", "").orEmpty()
-        if (key.isBlank()) { reply("AI isn't connected yet. Tap API KEY and add your Gemini API key."); return }
-        status.text = "● THINKING"
-        val history = JSONArray()
-        val c = db.rawQuery("SELECT role,text FROM chat ORDER BY id DESC LIMIT 12", null)
-        val rows = mutableListOf<Pair<String,String>>()
-        while (c.moveToNext()) rows.add(c.getString(0) to c.getString(1))
-        c.close()
-        rows.reverse()
-        for ((role, content) in rows) history.put(JSONObject().put("role", if (role == "assistant") "model" else "user").put("parts", JSONArray().put(JSONObject().put("text", content))))
-        val mem = JSONArray()
-        val mc = db.rawQuery("SELECT fact FROM memories ORDER BY id DESC LIMIT 30", null)
-        while (mc.moveToNext()) mem.put(mc.getString(0))
-        mc.close()
-        val body = JSONObject()
-            .put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "You are JARVIS, a natural, concise Android voice assistant. Remember context and follow-up questions. Never claim actions you did not perform. Saved user memories: $mem"))))
-            .put("contents", history)
-            .put("generationConfig", JSONObject().put("temperature", 0.65).put("maxOutputTokens", 700))
-        executor.execute {
-            val answer = try {
-                val model = prefs.getString("model", "gemini-2.5-flash") ?: "gemini-2.5-flash"
-                val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=" + URLEncoder.encode(key, "UTF-8"))
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"; connectTimeout = 20000; readTimeout = 45000; doOutput = true
-                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                }
-                conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-                val code = conn.responseCode
-                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-                val rawResponse = stream.bufferedReader().use { it.readText() }
-                conn.disconnect()
-                if (code !in 200..299) "AI API error $code. Check your key, model, quota, and internet." else JSONObject(rawResponse).optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)?.optString("text").orEmpty().ifBlank { "I didn't receive a response. Please try again." }
-            } catch (_: Exception) { "I couldn't reach the AI service. Check internet and API settings." }
-            runOnUiThread { reply(answer) }
+    private fun wireVoice() {
+        voice.onState = { brain.refresh() }
+        voice.onPartial = { partial = it; brain.listeners.toList().forEach { l -> l.stateChanged() } }
+        voice.onLevel = { brain.level(it) }
+        voice.onError = { m -> toast(m); brain.flashError(m) }
+        voice.onSessionEnded = { reason -> partial = ""; brain.refresh(); if (reason.isNotBlank()) toast(reason); updateMic() }
+        voice.onFinal = { text, conf ->
+            partial = ""
+            if (conf in 0f..0.35f) {
+                // Low confidence: let the user check/edit instead of acting on a likely mishearing.
+                brain.draft = text
+                voice.stopSession("")
+                tab(1); toast("I wasn't sure I heard that right — check it, then send.")
+            } else brain.submit(text)
         }
     }
 
-    private fun reply(text: String) {
-        add("JARVIS", text)
-        db.execSQL("INSERT INTO chat(role,text,at) VALUES(?,?,?)", arrayOf("assistant", text, System.currentTimeMillis()))
-        status.text = if (listening) "● LISTENING" else "● IDLE · READY"
-        if (voiceReady) voice.speak(text, TextToSpeech.QUEUE_FLUSH, null, "jarvis-reply")
-        // Resume recognition after the spoken reply so follow-up questions do not need a wake word.
-        if (listening) root.postDelayed({ if (listening) listenOnce() }, (text.length * 48L).coerceIn(1200L, 12000L))
-    }
-
-    private fun startListening() {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) { reply("Speech recognition isn't available on this phone."); return }
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 501); return
+    // ------------------------------------------------------------ theme / chrome
+    fun applyTheme(initial: Boolean = false) {
+        theme = Themes.resolve(this, prefs)
+        ui = Ui(this, theme)
+        @Suppress("DEPRECATION")
+        window.apply {
+            statusBarColor = theme.bg; navigationBarColor = theme.bg2
+            var f = 0
+            if (!theme.dark) f = f or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            decorView.systemUiVisibility = f
         }
-        listening = true
-        listenOnce()
+        buildRoot()
+        if (screens.isEmpty()) { screens.add(makeTab(tabIndex)) }
+        showCurrent()
     }
 
-    private fun listenOnce() {
-        if (!listening) return
-        try {
-            if (recognizer == null) recognizer = SpeechRecognizer.createSpeechRecognizer(this)
-            recognizer?.setRecognitionListener(object : RecognitionListener {
-                override fun onReadyForSpeech(params: Bundle?) { status.text = "● LISTENING · SPEAK NOW" }
-                override fun onBeginningOfSpeech() { status.text = "● HEARING YOU" }
-                override fun onRmsChanged(rmsdB: Float) {}
-                override fun onBufferReceived(buffer: ByteArray?) {}
-                override fun onEndOfSpeech() { status.text = "● PROCESSING SPEECH" }
-                override fun onError(error: Int) {
-                    if (listening) root.postDelayed({ listenOnce() }, 500)
-                }
-                override fun onResults(results: Bundle?) {
-                    val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty()
-                    if (text.isNotBlank()) handle(text) else if (listening) root.postDelayed({ listenOnce() }, 300)
-                }
-                override fun onPartialResults(partialResults: Bundle?) {
-                    val partial = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-                    if (!partial.isNullOrBlank()) status.text = "● HEARING: $partial"
-                }
-                override fun onEvent(eventType: Int, params: Bundle?) {}
-            })
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1800L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 1200L)
+    private fun buildRoot() {
+        rootView = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = ui.pageBackground() }
+        content = FrameLayout(this)
+        rootView.addView(content, ui.lp(-1, 0, 1f))
+        navBar = buildNav()
+        rootView.addView(navBar, ui.lpm(-1, ui.dp(68), l = 12, tp = 4, r = 12, b = 10))
+        setContentView(rootView)
+    }
+
+    private fun buildNav(): LinearLayout {
+        navItems.clear()
+        val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; background = ui.shape(theme.surface, 34f, theme.stroke) }
+        fun item(idx: Int, icon: String, label: String): LinearLayout {
+            val b = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; isClickable = true; isFocusable = true
+                contentDescription = label; setOnClickListener { tab(idx) }
             }
-            recognizer?.startListening(intent)
-        } catch (_: Exception) { status.text = "● SPEECH SERVICE ERROR" }
+            val ic = IconView(this, icon, theme.dim)
+            b.addView(ic, LinearLayout.LayoutParams(ui.dp(24), ui.dp(24)))
+            b.addView(ui.tv(label, 11f, theme.dim, true, Gravity.CENTER).apply { setPadding(0, ui.dp(3), 0, 0) })
+            navItems.add(b to ic)
+            return b
+        }
+        bar.addView(item(0, "home", "Home"), ui.lp(0, -1, 1f))
+        bar.addView(item(1, "chat", "Chat"), ui.lp(0, -1, 1f))
+        val fab = FrameLayout(this).apply { isClickable = true; isFocusable = true; setOnClickListener { toggleVoice() } }
+        micFab = fab
+        bar.addView(fab, LinearLayout.LayoutParams(ui.dp(64), ui.dp(64)).apply { setMargins(ui.dp(4), 0, ui.dp(4), 0) })
+        bar.addView(item(2, "gear", "Settings"), ui.lp(0, -1, 1f))
+        bar.addView(item(3, "bell", "Updates"), ui.lp(0, -1, 1f))
+        updateMic()
+        return bar
     }
 
-    private fun stopListening() {
-        listening = false
-        try { recognizer?.cancel() } catch (_: Exception) {}
-        status.text = "● IDLE · READY"
+    private fun updateMic() {
+        val fab = micFab ?: return
+        val on = voice.sessionActive
+        fab.background = ui.shape(if (on) theme.accent else theme.surface2, 32f, if (on) theme.accent else theme.stroke, 1.5f)
+        fab.removeAllViews()
+        val fg = if (on) theme.onAccent else theme.text
+        fab.addView(IconView(this, if (voice.state == ZVoice.VState.SPEAKING) "stop" else "mic", fg), FrameLayout.LayoutParams(ui.dp(28), ui.dp(28), Gravity.CENTER))
+        fab.contentDescription = if (on) "Stop voice session" else "Start voice session"
     }
 
-    private fun keyDialog() {
-        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 8, 24, 4) }
-        val key = EditText(this).apply { hint = "Gemini API key"; setText(prefs.getString("api_key", "")); inputType = 129 }
-        val model = EditText(this).apply { hint = "Model name"; setText(prefs.getString("model", "gemini-2.5-flash")) }
-        box.addView(key); box.addView(model)
-        android.app.AlertDialog.Builder(this).setTitle("AI connection")
-            .setMessage("The key stays in this app's private preferences. Requests are sent to Google; don't share the key.")
-            .setView(box).setNegativeButton("Cancel", null)
-            .setPositiveButton("Save") { _, _ -> prefs.edit().putString("api_key", key.text.toString().trim()).putString("model", model.text.toString().trim().ifBlank { "gemini-2.5-flash" }).apply(); add("JARVIS", "AI settings saved on this device.") }.show()
+    private fun updateNav() {
+        val cur = screens.lastOrNull()
+        navBar.visibility = if (cur == null || cur.isSub) View.GONE else View.VISIBLE
+        val map = intArrayOf(0, 1, 2, 3)
+        for ((i, p) in navItems.withIndex()) {
+            val sel = i == tabIndex && screens.size <= 1
+            p.second.color = if (sel) theme.accentText else theme.dim
+            p.second.invalidate()
+            (p.first.getChildAt(1) as TextView).setTextColor(if (sel) theme.accentText else theme.dim)
+            p.first.background = if (sel) ui.shape(com.nshd.jarvis.Themes.alpha(theme.accent, 36), 22f) else null
+            map[i] = i
+        }
     }
 
-    private fun memoryDialog() {
-        val c = db.rawQuery("SELECT fact FROM memories ORDER BY id DESC", null)
-        val facts = mutableListOf<String>()
-        while (c.moveToNext()) facts.add("• " + c.getString(0))
-        c.close()
-        android.app.AlertDialog.Builder(this).setTitle("Local memory")
-            .setMessage(if (facts.isEmpty()) "No memories saved yet. Say: Remember that I prefer short answers." else facts.joinToString("\n"))
-            .setPositiveButton("OK", null).setNeutralButton("Clear all") { _, _ -> db.execSQL("DELETE FROM memories"); add("JARVIS", "Saved memories cleared.") }.show()
+    // ------------------------------------------------------------ navigation
+    private fun makeTab(i: Int): Screen = when (i) { 1 -> ChatScreen(); 2 -> SettingsScreen(); 3 -> ActivityScreen(); else -> HomeScreen() }
+
+    fun tab(i: Int) {
+        screens.lastOrNull()?.onHide()
+        screens.clear(); tabIndex = i
+        screens.add(makeTab(i))
+        showCurrent()
     }
 
-    override fun onInit(status: Int) {
-        voiceReady = status == TextToSpeech.SUCCESS
-        if (voiceReady) voice.language = Locale.getDefault()
+    fun go(s: Screen) {
+        screens.lastOrNull()?.onHide()
+        screens.add(s)
+        if (::content.isInitialized) showCurrent()
+    }
+
+    fun back() {
+        if (screens.size > 1) { screens.removeAt(screens.size - 1).onHide(); showCurrent() }
+        else if (tabIndex != 0) tab(0)
+        else finish()
+    }
+
+    fun finishOnboarding(next: Screen?) {
+        screens.clear(); screens.add(makeTab(0)); tabIndex = 0
+        if (next != null) { screens.add(next) }
+        showCurrent()
+    }
+
+    private fun showCurrent() {
+        val s = screens.last()
+        s.act = this
+        content.removeAllViews()
+        content.addView(s.build(ui), FrameLayout.LayoutParams(-1, -1))
+        updateNav()
+        s.onShow()
+    }
+
+    fun rebuildCurrent() {
+        val s = screens.lastOrNull() ?: return
+        val oldView = content.getChildAt(0)
+        val y = findScroll(oldView)?.scrollY ?: 0
+        s.onHide()
+        showCurrent()
+        if (y > 0) content.post { findScroll(content.getChildAt(0))?.scrollTo(0, y) }
+    }
+
+    private fun findScroll(v: View?): ScrollView? {
+        if (v is ScrollView) return v
+        if (v is ViewGroup) for (i in 0 until v.childCount) findScroll(v.getChildAt(i))?.let { return it }
+        return null
+    }
+
+    override fun onBackPressed() = back()
+
+    // ------------------------------------------------------------ voice
+    fun toggleVoice() {
+        if (voice.state == ZVoice.VState.SPEAKING) { voice.interrupt(); return }
+        if (voice.sessionActive) { voice.stopSession(""); return }
+        when (val r = voice.startSession()) {
+            null -> {}
+            "need_permission" -> { pendingVoice = true; requestPerm(501, Manifest.permission.RECORD_AUDIO) }
+            else -> toast(r)
+        }
+        brain.refresh(); updateMic()
+    }
+
+    override fun stateChanged() {
+        MainActivityHolder.line = brain.lastNote.ifBlank { brain.orb.label }
+        updateMic()
+    }
+
+    // ------------------------------------------------------------ helpers used by screens
+    fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
+    fun versionName(): String = try { packageManager.getPackageInfo(packageName, 0).versionName ?: "?" } catch (_: Exception) { "?" }
+    @Suppress("DEPRECATION")
+    fun versionCode(): Int = try { packageManager.getPackageInfo(packageName, 0).versionCode } catch (_: Exception) { 0 }
+
+    fun dialog(): AlertDialog.Builder = AlertDialog.Builder(this,
+        if (theme.dark) android.R.style.Theme_Material_Dialog_Alert else android.R.style.Theme_Material_Light_Dialog_Alert)
+
+    fun confirm(title: String, body: String, positive: String, onYes: () -> Unit, onNo: (() -> Unit)?) {
+        val show = {
+            dialog().setTitle(title).setMessage(body).setCancelable(false)
+                .setPositiveButton(positive) { _, _ -> onYes() }
+                .setNegativeButton("Cancel") { _, _ -> onNo?.invoke() }.show()
+            Unit
+        }
+        if (resumedNow) show()
+        else {
+            // Zara isn't on screen (e.g. mid-task in another app): the question waits here until you're back.
+            pendingConfirm = show
+            brain.lastNote = "Waiting for your OK in Zara"
+            OverlayService.setStatus("Waiting for your OK")
+            try { startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {}
+        }
+    }
+
+    fun promptText(title: String, hint: String, initial: String, cb: (String) -> Unit) {
+        val et = ui.input(hint, initial)
+        val box = FrameLayout(this).apply { setPadding(ui.dp(20), ui.dp(8), ui.dp(20), 0); addView(et) }
+        dialog().setTitle(title).setView(box).setNegativeButton("Cancel", null)
+            .setPositiveButton("OK") { _, _ -> val v = et.text.toString().trim(); if (v.isNotEmpty()) cb(v) }.show()
+    }
+
+    fun chooser(title: String, items: List<Pair<String, () -> Unit>>) {
+        dialog().setTitle(title).setItems(items.map { it.first }.toTypedArray()) { _, i -> items[i].second() }.show()
+    }
+
+    fun copyText(text: String) {
+        (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText(Brand.APP_NAME, text))
+        toast("Copied")
+    }
+
+    fun shareText(text: String) {
+        try { startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), "Share")) } catch (_: Exception) { toast("Nothing can handle that.") }
+    }
+
+    private val allowedHosts get() = setOf("instagram.com", "www.instagram.com", "t.me", "wa.me") +
+        (if (Brand.WEBSITE.startsWith("https://")) setOf(Uri.parse(Brand.WEBSITE).host.orEmpty()) else emptySet())
+
+    fun openLink(url: String) {
+        val u = Uri.parse(url)
+        if (u.scheme != "https" || u.host !in allowedHosts) { toast("That link isn't allowed."); return }
+        try { startActivity(Intent(Intent.ACTION_VIEW, u)) } catch (_: Exception) { toast("No app can open that link.") }
+    }
+
+    fun openAppSettings() {
+        startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+    }
+
+    fun requestPerm(code: Int, perm: String) { requestPermissions(arrayOf(perm), code) }
+
+    fun openInCode(lang: String, code: String) {
+        val map = mapOf("kotlin" to ("Kotlin" to "kt"), "kt" to ("Kotlin" to "kt"), "java" to ("Java" to "java"), "python" to ("Python" to "py"), "py" to ("Python" to "py"),
+            "javascript" to ("JavaScript" to "js"), "js" to ("JavaScript" to "js"), "html" to ("HTML" to "html"), "cpp" to ("C++" to "cpp"), "c++" to ("C++" to "cpp"))
+        val (l, ext) = map[lang.lowercase()] ?: ("Text" to "txt")
+        codeText = code; codeLang = l; codeName = "main.$ext"; codeUri = null; codeStatus = "Only inside Zara (not saved yet)"
+        go(CodeScreen())
+    }
+
+    // ------------------------------------------------------------ lifecycle & results
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        screens.lastOrNull()?.onActivityResult(requestCode, resultCode, data)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 501 && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startListening()
-        else if (requestCode == 501) add("JARVIS", "Microphone permission is needed for voice input.")
+        val ok = grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (requestCode == 501) {
+            if (ok && pendingVoice) { pendingVoice = false; toggleVoice() }
+            else if (!ok) { pendingVoice = false; toast("Microphone permission is needed for voice. Text chat still works.") }
+        }
+        screens.lastOrNull()?.onPermission(requestCode, ok)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        resumedNow = true
+        val s = screens.lastOrNull()
+        if (s is PermissionsScreen || s is AppControlScreen || s is OverlayScreen || s is VoiceSetupScreen) rebuildCurrent()
+        if (prefs.b("overlay_on", false) && OverlayService.canDraw(this) && OverlayService.instance == null) OverlayService.start(this)
+        pendingConfirm?.let { pendingConfirm = null; it() }
+        updateMic()
+    }
+
+    override fun onPause() { resumedNow = false; super.onPause() }
+
+    override fun onStop() {
+        // Android doesn't allow reliable background listening; end the session so the mic state is never ambiguous.
+        if (voice.sessionActive) voice.stopSession("")
+        super.onStop()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applyTheme()
     }
 
     override fun onDestroy() {
-        listening = false
-        try { recognizer?.destroy() } catch (_: Exception) {}
-        try { if (::voice.isInitialized) voice.shutdown() } catch (_: Exception) {}
+        brain.listeners.remove(this)
+        brain.shutdown()
+        voice.shutdown()
         try { db.close() } catch (_: Exception) {}
-        executor.shutdownNow()
         super.onDestroy()
     }
 }
