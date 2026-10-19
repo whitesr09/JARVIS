@@ -269,3 +269,32 @@ class ZVoice(private val ctx: Context, private val prefs: Prefs) : TextToSpeech.
         tts = null
     }
 }
+
+/** Friendly, stable names for the phone's raw text-to-speech voice ids (e.g. "en-in-x-ahp-local" → "Aria"). */
+object VoiceNames {
+    private val pool = listOf("Aria", "Ember", "Nova", "Kai", "Sage", "Orion", "Luna", "Atlas", "Ivy", "Zephyr", "Mira", "Jett",
+        "Cleo", "Rune", "Skye", "Milo", "Vera", "Finn", "Opal", "Rex", "Tara", "Leo", "Nia", "Cyrus")
+
+    /** Deterministic: the same voice keeps the same name; collisions inside one list are resolved in order. */
+    fun assign(voices: List<Voice>): Map<String, String> {
+        val used = HashSet<String>(); val out = HashMap<String, String>()
+        for (v in voices.sortedBy { it.name }) {
+            var idx = Math.abs(v.name.hashCode()) % pool.size
+            var tries = 0
+            while (pool[idx] in used && tries < pool.size) { idx = (idx + 1) % pool.size; tries++ }
+            var n = pool[idx]
+            if (n in used) { var k = 2; while ("$n $k" in used) k++; n = "$n $k" }
+            used.add(n); out[v.name] = n
+        }
+        return out
+    }
+
+    fun label(p: Prefs, names: Map<String, String>, v: Voice): String =
+        p.s("voice_label_" + v.name).ifBlank { names[v.name] ?: v.name }
+
+    fun detail(v: Voice): String {
+        val q = when { v.quality >= Voice.QUALITY_VERY_HIGH -> "Studio quality"; v.quality >= Voice.QUALITY_HIGH -> "High quality"; v.quality >= Voice.QUALITY_NORMAL -> "Standard quality"; else -> "Basic" }
+        val where = if (v.isNetworkConnectionRequired) "online" else "on-device"
+        return v.locale.getDisplayName(Locale.ENGLISH) + " · " + q + " · " + where
+    }
+}

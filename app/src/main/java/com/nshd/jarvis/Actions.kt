@@ -1,11 +1,14 @@
 package com.nshd.jarvis
 
+import android.app.SearchManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.AlarmClock
+import android.provider.MediaStore
 import android.provider.Settings
 import org.json.JSONObject
 import java.net.URLEncoder
@@ -33,9 +36,18 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
 
     private fun blocked(s: TaskStatus, msg: String, hint: String = "") = ActionResult(s, msg, hint)
 
+    private fun mediaLabel(t: String) = when (t.lowercase()) { "spotify" -> "Spotify"; "youtube" -> "YouTube"; "ytmusic" -> "YouTube Music"; else -> t }
+
     fun title(r: ActionRequest): String = when (r.action) {
         "open_app" -> "Open ${r.target}"
+        "play_media" -> "Play on " + mediaLabel(r.target)
         "search_youtube" -> "Search YouTube"
+        "web_search" -> "Search the web"
+        "set_timer" -> "Set a timer"
+        "set_alarm" -> "Set an alarm"
+        "dial_number" -> "Open the dialer"
+        "navigate_to" -> "Navigate"
+        "sms_draft" -> "Draft a text message"
         "open_settings" -> "Open ${r.target.ifBlank { "general" }} settings"
         "whatsapp_draft" -> "Draft WhatsApp message"
         "go_back" -> "Go back"; "go_home" -> "Go to home screen"; "recent_apps" -> "Open recent apps"
@@ -53,7 +65,15 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
             return block(blocked(TaskStatus.BLOCKED_BY_PERMISSION, "App control is turned off.", "Turn it on in Settings → App Control & Hands-Free."))
         when (r.action) {
             "open_app" -> if (r.target.isBlank()) return block(blocked(TaskStatus.FAILED, "Which app should I open?"))
-            "search_youtube", "whatsapp_draft", "type_text" -> if (r.text.isBlank()) return block(blocked(TaskStatus.FAILED, "I need some text for that action."))
+            "play_media" -> {
+                if (r.target.isBlank()) return block(blocked(TaskStatus.NEEDS_USER_ACTION, "Which app should I play it on — Spotify, YouTube, YouTube Music?"))
+                if (r.target.lowercase() == "youtube" && r.text.isBlank()) return block(blocked(TaskStatus.NEEDS_USER_ACTION, "What should I play on YouTube?"))
+            }
+            "set_timer" -> if ((r.text.toIntOrNull() ?: 0) !in 1..86400) return block(blocked(TaskStatus.FAILED, "I need a timer length between 1 second and 24 hours."))
+            "set_alarm" -> if (!Regex("^([01]?\\d|2[0-3]):[0-5]\\d$").matches(r.text)) return block(blocked(TaskStatus.FAILED, "I need an alarm time like 06:30."))
+            "dial_number" -> if (r.text.count { it.isDigit() } < 5) return block(blocked(TaskStatus.FAILED, "That doesn't look like a phone number."))
+            "sms_draft" -> if (r.target.count { it.isDigit() } < 5 || r.text.isBlank()) return block(blocked(TaskStatus.FAILED, "I need a phone number and the message text."))
+            "search_youtube", "whatsapp_draft", "type_text", "web_search", "navigate_to" -> if (r.text.isBlank()) return block(blocked(TaskStatus.FAILED, "I need some text for that action."))
             "tap_text" -> if (r.target.isBlank()) return block(blocked(TaskStatus.FAILED, "What should I tap?"))
         }
         if (r.action in needsA11y && ZaraAccessibilityService.instance == null)
@@ -66,12 +86,20 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
             return block(blocked(TaskStatus.BLOCKED_BY_PERMISSION, "That kind of action is switched off in your settings.", "Change it in Settings → App Control & Hands-Free."))
 
         val risk = when (r.action) {
-            "whatsapp_draft", "type_text" -> Risk.CONSEQUENTIAL
+            "whatsapp_draft", "type_text", "sms_draft" -> Risk.CONSEQUENTIAL
             "tap_text" -> if (Commands.RISKY.containsMatchIn(r.target)) Risk.CONSEQUENTIAL else Risk.LOW
             else -> Risk.LOW
         }
         val preview = when (r.action) {
             "open_app" -> "Open the app “${r.target}”."
+            "play_media" -> "Play " + (if (r.text.isBlank()) "something" else "“${r.text}”") + " on " + mediaLabel(r.target) + "." +
+                (if (r.target.lowercase() == "youtube") "\nI'll start the top result (needs Accessibility; otherwise the search is just opened)." else "")
+            "web_search" -> "Search the web for:\n“${r.text}”"
+            "navigate_to" -> "Open maps for:\n“${r.text}”"
+            "set_timer" -> "Ask the Clock app to start a " + (r.text.toIntOrNull() ?: 0).let { s -> if (s % 3600 == 0) "${s / 3600} hour" else if (s % 60 == 0) "${s / 60} minute" else "$s second" } + " timer."
+            "set_alarm" -> "Ask the Clock app to set an alarm for ${r.text}."
+            "dial_number" -> "Open the phone dialer with ${r.text}. You press call yourself."
+            "sms_draft" -> "Prepare a text to ${r.target} with this exact message. You press Send yourself:\n\n“${r.text}”"
             "search_youtube" -> "Search YouTube for:\n“${r.text}”\n\nYou choose which result to play."
             "open_settings" -> "Open the Android “${r.target.ifBlank { "general" }}” settings screen. You make any changes yourself."
             "whatsapp_draft" -> (if (r.target.isNotBlank()) "Recipient you mentioned: ${r.target} (you pick the chat yourself).\n" else "") +
@@ -98,6 +126,33 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
     private fun run(r: ActionRequest, done: (ActionResult) -> Unit) {
         when (r.action) {
             "open_app" -> openApp(r.target, done)
+            "play_media" -> playMedia(r.target, r.text, done)
+            "web_search" -> {
+                ctx.startActivity(Intent(Intent.ACTION_WEB_SEARCH).putExtra(SearchManager.QUERY, r.text).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                verifyForeground({ it != ctx.packageName }, "Opened a web search for “${r.text}”.", "Asked Android to search the web for “${r.text}”.", done)
+            }
+            "navigate_to" -> {
+                ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + URLEncoder.encode(r.text, "UTF-8"))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                verifyForeground({ it != ctx.packageName }, "Opened maps for “${r.text}”.", "Asked Android to open maps for “${r.text}”.", done)
+            }
+            "set_timer" -> {
+                val secs = r.text.toInt()
+                ctx.startActivity(Intent(AlarmClock.ACTION_SET_TIMER).putExtra(AlarmClock.EXTRA_LENGTH, secs).putExtra(AlarmClock.EXTRA_SKIP_UI, true).putExtra(AlarmClock.EXTRA_MESSAGE, "Zara").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "I asked the Clock app to start the timer. I can't read the Clock app, so please glance at it to confirm.", "Alarm/timer apps don't report back."))
+            }
+            "set_alarm" -> {
+                val (h, m) = r.text.split(":").map { it.toInt() }
+                ctx.startActivity(Intent(AlarmClock.ACTION_SET_ALARM).putExtra(AlarmClock.EXTRA_HOUR, h).putExtra(AlarmClock.EXTRA_MINUTES, m).putExtra(AlarmClock.EXTRA_SKIP_UI, true).putExtra(AlarmClock.EXTRA_MESSAGE, "Zara").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "I asked the Clock app to set an alarm for ${r.text}. Please check the Clock app to confirm.", "Alarm apps don't report back."))
+            }
+            "dial_number" -> {
+                ctx.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(r.text))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                done(ActionResult(TaskStatus.NEEDS_USER_ACTION, "The dialer is open with ${r.text}. Press call yourself — I never place calls."))
+            }
+            "sms_draft" -> {
+                ctx.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + Uri.encode(r.target))).putExtra("sms_body", r.text).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                done(ActionResult(TaskStatus.NEEDS_USER_ACTION, "The message to ${r.target} is drafted in your messaging app. Review it and press Send yourself."))
+            }
             "search_youtube" -> {
                 val uri = Uri.parse("https://www.youtube.com/results?search_query=" + URLEncoder.encode(r.text, "UTF-8"))
                 val yt = Intent(Intent.ACTION_VIEW, uri).setPackage("com.google.android.youtube").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -152,7 +207,7 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
         }
     }
 
-    private fun openApp(name: String, done: (ActionResult) -> Unit) {
+    private fun findApps(name: String): List<Pair<String, String>> {
         val pm = ctx.packageManager
         val apps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
             .map { it.loadLabel(pm).toString() to it.activityInfo.packageName }.distinctBy { it.second }
@@ -160,6 +215,74 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
         var hits = apps.filter { it.first.lowercase() == q }
         if (hits.isEmpty()) hits = apps.filter { it.first.lowercase().startsWith(q) }
         if (hits.isEmpty()) hits = apps.filter { it.first.lowercase().contains(q) }
+        return hits
+    }
+
+    private fun installed(pkg: String) = ctx.packageManager.getLaunchIntentForPackage(pkg) != null
+
+    private fun playMedia(app: String, query: String, done: (ActionResult) -> Unit) {
+        when (app.lowercase()) {
+            "youtube" -> playYoutube(query, done)
+            "spotify" -> mediaSearch("com.spotify.music", "Spotify", query, done)
+            "ytmusic" -> mediaSearch("com.google.android.apps.youtube.music", "YouTube Music", query, done)
+            else -> {
+                val hits = findApps(app)
+                when {
+                    hits.isEmpty() -> done(ActionResult(TaskStatus.FAILED, "I couldn't find an installed app called “$app”."))
+                    hits.size > 1 -> done(ActionResult(TaskStatus.NEEDS_USER_ACTION, "More than one app matches “$app”: " + hits.take(5).joinToString(", ") { it.first } + ". Which one?"))
+                    else -> mediaSearch(hits[0].second, hits[0].first, query, done)
+                }
+            }
+        }
+    }
+
+    /** Standard Android "play from search" request. Spotify, YouTube Music and many players handle it. */
+    private fun mediaSearch(pkg: String, label: String, query: String, done: (ActionResult) -> Unit) {
+        if (!installed(pkg)) return done(ActionResult(TaskStatus.FAILED, "$label isn't installed on this phone."))
+        val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).setPackage(pkg).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*").putExtra(SearchManager.QUERY, query)
+        try { ctx.startActivity(i) } catch (_: Exception) {
+            ctx.packageManager.getLaunchIntentForPackage(pkg)?.let { ctx.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            return done(ActionResult(TaskStatus.NEEDS_USER_ACTION, "$label opened, but it doesn't accept play requests from other apps. Search for " + (if (query.isBlank()) "something" else "“$query”") + " there yourself."))
+        }
+        val what = if (query.isBlank()) "music" else "“$query”"
+        main.postDelayed({
+            val svc = ZaraAccessibilityService.instance
+            val fg = svc?.foregroundPackage()
+            when {
+                svc == null -> done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "I asked $label to play $what. I can't confirm playback because Accessibility is off.", "Enable it under App Control for verified results."))
+                fg == pkg && svc.hasText(listOf("Pause")) -> done(ActionResult(TaskStatus.COMPLETED, "Playing $what in $label."))
+                else -> done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "I asked $label to play $what, but I couldn't see it playing.", "It may still be loading, need you to sign in, or have shown a prompt."))
+            }
+        }, 3500)
+    }
+
+    /** YouTube has no play-from-search hook, so: open results, then (with Accessibility) tap the top real result. */
+    private fun playYoutube(query: String, done: (ActionResult) -> Unit) {
+        val uri = Uri.parse("https://www.youtube.com/results?search_query=" + URLEncoder.encode(query, "UTF-8"))
+        val yt = Intent(Intent.ACTION_VIEW, uri).setPackage("com.google.android.youtube").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try { ctx.startActivity(yt) } catch (_: Exception) { ctx.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        val svc = ZaraAccessibilityService.instance
+            ?: return done(ActionResult(TaskStatus.NEEDS_USER_ACTION, "YouTube search for “$query” is open. Turn on Accessibility (Settings → App Control) and I'll start the top result for you; for now, tap a video.", "Starting a video needs Accessibility."))
+        var tries = 0
+        val skip = Regex("(?i)sponsored|advertisement|\\bad\\b\\s*[·•-]")
+        fun attempt() {
+            val o = svc.clickFirstMatching(Regex("(?i)play video|play short"), skip)
+            if (o.dispatched) {
+                main.postDelayed({
+                    if (svc.hasText(listOf("Minimize", "Pause video", "Collapse", "Pause")))
+                        done(ActionResult(TaskStatus.COMPLETED, "Playing the top YouTube result for “$query”."))
+                    else done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "I tapped the top result for “$query”, but I couldn't confirm it's playing.", "YouTube may still be loading or showing a prompt."))
+                }, 3200)
+            } else if (++tries < 9) main.postDelayed({ attempt() }, 700)
+            else done(ActionResult(TaskStatus.NEEDS_USER_ACTION, "I opened the results for “$query” but couldn't find a video to tap. Please pick one.", o.note))
+        }
+        main.postDelayed({ attempt() }, 2200)
+    }
+
+    private fun openApp(name: String, done: (ActionResult) -> Unit) {
+        val pm = ctx.packageManager
+        val hits = findApps(name)
         if (hits.isEmpty()) return done(ActionResult(TaskStatus.FAILED, "I couldn't find an installed app called “$name”."))
         if (hits.size > 1) return done(ActionResult(TaskStatus.NEEDS_USER_ACTION,
             "More than one app matches “$name”: " + hits.take(5).joinToString(", ") { it.first } + ". Which one do you mean?"))

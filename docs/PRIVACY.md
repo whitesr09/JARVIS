@@ -19,6 +19,9 @@ There is **no silent fallback** to another provider. Screen contents are never c
 ## Speech
 Speech recognition and text-to-speech use the phone's installed Android engines. Depending on the device, the recognizer may process audio on its provider's servers — this is controlled by Android/the engine vendor, not by this app. The microphone is used only while a voice session is running; the session stops when the app leaves the screen.
 
+## Hands-free wake phrase (optional, off by default)
+When on, a foreground service with a permanent notification keeps Android's speech recogniser running to hear the wake phrase. The recogniser is the phone's, and depending on the device it may process audio on its provider's servers; the app asks it to prefer offline recognition. Audio is not stored by this app and nothing is sent to your AI provider until after the phrase is heard. Turn it off in Settings → App Control & Hands-Free or from the notification.
+
 ## Accessibility service
 Optional, user-enabled. It acts only on an explicit request (tap, scroll, type, check that the screen changed). It keeps one timestamp of the last window change for verification and does not record, store or upload screen content.
 

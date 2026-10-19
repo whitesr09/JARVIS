@@ -38,6 +38,8 @@ class ActivityScreen : Screen() {
 
         col.addView(ui.section("Release notes"))
         col.addView(ui.card(16).apply {
+            addView(ui.tv("0.3.0 — play anything, orb styles, Hey Zara", 14f, t.text, true))
+            addView(ui.dim("• “Open Spotify and play …” now goes to Spotify (the AI no longer reuses YouTube)\n• YouTube: starts the top result with Accessibility; Spotify/YouTube Music/other players via play-from-search\n• New: timers, alarms, web search, maps, dial and SMS drafts\n• Five orb styles: Particles, Fluid, Aurora, Pulse, Waveform\n• Friendly, renameable names for every installed voice\n• Hands-free “Hey Zara” (experimental)", 13f).apply { setPadding(0, ui.dp(8), 0, ui.dp(14)) })
             addView(ui.tv("0.2.1 — layout fixes & polish", 14f, t.text, true))
             addView(ui.dim("• Fixed settings/home rows that rendered as tall blank cards\n• Denser orb with lavender disc and orbiting rings (no clipped halo)\n• Touch ripples, rounded-clip cards, richer Home tiles and chat start screen", 13f).apply { setPadding(0, ui.dp(8), 0, ui.dp(14)) })
             addView(ui.tv("0.2.0 — Zara AI", 14f, t.text, true))

@@ -274,12 +274,25 @@ class PersonaScreen : Screen() {
         col.addView(ui.section("Spoken voice"))
         val vc = ui.card(0)
         val voices = act.voice.installedVoices()
+        val vNames = VoiceNames.assign(voices)
         val sel = voices.firstOrNull { it.name == p.s("tts_voice") }
-        vc.addView(ui.row("mic", "Voice", sel?.name ?: "Phone default (${voices.size} installed for this language)") {
+        vc.addView(ui.row("mic", "Voice", if (sel != null) VoiceNames.label(p, vNames, sel) + " — " + VoiceNames.detail(sel) else "Phone default · ${voices.size} voices installed for this language") {
             if (voices.isEmpty()) act.toast("No voices reported by Android text-to-speech.")
             else act.chooser("Choose a voice", listOf<Pair<String, () -> Unit>>("Phone default" to { p.remove("tts_voice"); act.voice.applySettings(); act.rebuildCurrent() }) +
-                voices.take(40).map { v -> (v.name + " · " + v.locale.displayName) to { p.put("tts_voice", v.name); act.voice.applySettings(); act.rebuildCurrent() } })
+                voices.take(40).map { v ->
+                    val nm = VoiceNames.label(p, vNames, v)
+                    (nm + " — " + VoiceNames.detail(v)) to {
+                        p.put("tts_voice", v.name); act.voice.applySettings(); act.rebuildCurrent()
+                        act.voice.speak("Hi, I'm " + Persona.name(p) + ". This is the voice called $nm.")
+                    }
+                })
         })
+        if (sel != null) {
+            vc.addView(ui.divider())
+            vc.addView(ui.row("pencil", "Rename this voice", "Currently “" + VoiceNames.label(p, vNames, sel) + "”") {
+                act.promptText("Name this voice", "e.g. Aria", VoiceNames.label(p, vNames, sel)) { n -> p.put("voice_label_" + sel.name, n.take(24)); act.rebuildCurrent() }
+            })
+        }
         vc.addView(ui.divider())
         vc.addView(ui.labeledSlider("Speech rate", { (it / 100f).toString() + "×" }, 50, 200, p.i("tts_rate", 100)) { p.put("tts_rate", it); act.voice.applySettings() })
         vc.addView(ui.divider())
@@ -339,13 +352,15 @@ class VoiceSetupScreen : Screen() {
     }
 
     private fun runTest() {
+        WakeService.pause()
         val r = act.voice.testOnce { text ->
+            WakeService.resume()
             act.runOnUiThread { result?.text = if (text.isBlank()) "Nothing heard. Try again, closer to the mic." else "“$text”" }
         }
         when (r) {
             null -> result?.text = "Listening…"
-            "need_permission" -> act.requestPerm(501, android.Manifest.permission.RECORD_AUDIO)
-            else -> result?.text = r
+            "need_permission" -> { WakeService.resume(); act.requestPerm(501, android.Manifest.permission.RECORD_AUDIO) }
+            else -> { WakeService.resume(); result?.text = r }
         }
     }
     override fun onPermission(req: Int, granted: Boolean) { if (req == 501) act.rebuildCurrent() }

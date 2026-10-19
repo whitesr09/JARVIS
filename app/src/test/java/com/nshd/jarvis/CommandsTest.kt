@@ -23,8 +23,37 @@ class CommandsTest {
 
     @Test fun youtubeSearch() {
         assertEquals(d("search_youtube", "", "arijit singh songs"), Commands.parse("search YouTube for arijit singh songs"))
-        assertEquals(d("search_youtube", "", "iron man highlights"), Commands.parse("play iron man highlights on youtube"))
-        assertEquals(d("search_youtube", "", "lofi beats"), Commands.parse("open youtube and play lofi beats"))
+        assertEquals(d("search_youtube", "", "lofi"), Commands.parse("search youtube for lofi"))
+        assertEquals(d("play_media", "youtube", "iron man highlights"), Commands.parse("play iron man highlights on youtube"))
+        assertEquals(d("play_media", "youtube", "lofi beats"), Commands.parse("open youtube and play lofi beats"))
+    }
+
+    @Test fun eachRequestCarriesItsOwnApp() {
+        // Regression: "open Spotify and play …" used to fall through to YouTube.
+        assertEquals(d("play_media", "spotify", "lofi beats"), Commands.parse("open Spotify and play lofi beats"))
+        assertEquals(d("play_media", "spotify", "kesariya"), Commands.parse("play kesariya on spotify"))
+        assertEquals(d("play_media", "spotify", ""), Commands.parse("play something on Spotify"))
+        assertEquals(d("play_media", "ytmusic", "believer"), Commands.parse("play believer on youtube music"))
+        assertEquals(d("play_media", "JioSaavn", "arijit"), Commands.parse("open JioSaavn and play arijit"))
+    }
+
+    @Test fun timersAlarmsAndMore() {
+        assertEquals(d("set_timer", "", "300"), Commands.parse("set a timer for 5 minutes"))
+        assertEquals(d("set_alarm", "", "18:30"), Commands.parse("set an alarm for 6:30 pm"))
+        assertEquals(d("set_alarm", "", "00:00"), Commands.parse("set alarm at 12 am"))
+        assertEquals(d("web_search", "", "best pizza near me"), Commands.parse("google best pizza near me"))
+        assertEquals(d("dial_number", "", "9876543210"), Commands.parse("call 9876543210"))
+        assertEquals(d("sms_draft", "9876543210", "running late"), Commands.parse("text 9876543210 saying running late"))
+    }
+
+    @Test fun wakePhrase() {
+        assertTrue(Wake.matches("hey zara", 1))
+        assertTrue(Wake.matches("heyzara", 0))
+        assertFalse(Wake.matches("hey sara", 0))
+        assertTrue(Wake.matches("hey sara", 1))
+        assertFalse(Wake.matches("zara", 0))
+        assertTrue(Wake.matches("zara open youtube", 2))
+        assertFalse(Wake.matches("hey there how are you", 2))
     }
 
     @Test fun whatsappIsOnlyADraft() {

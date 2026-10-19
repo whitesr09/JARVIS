@@ -16,6 +16,13 @@ import android.view.ViewGroup
 import android.widget.*
 
 class MainActivity : Activity(), BrainListener {
+    companion object {
+        /** The instance currently on screen (null when the app is in the background). */
+        @Volatile var visible: MainActivity? = null
+        /** True while a voice session owns the microphone. */
+        @Volatile var voiceActive = false
+    }
+
     lateinit var prefs: Prefs
     lateinit var db: ZDb
     lateinit var voice: ZVoice
@@ -40,6 +47,7 @@ class MainActivity : Activity(), BrainListener {
     private var resumedNow = false
     private var pendingConfirm: (() -> Unit)? = null
     private var pendingVoice = false
+    private var pendingWake = false
     private val navItems = ArrayList<Pair<LinearLayout, IconView>>()
     private var micFab: FrameLayout? = null
 
@@ -56,6 +64,36 @@ class MainActivity : Activity(), BrainListener {
         applyTheme(initial = true)
         if (!prefs.b("onboarded", false)) go(OnboardingScreen())
         if (prefs.b("overlay_on", false) && OverlayService.canDraw(this)) OverlayService.start(this)
+        if (intent?.getBooleanExtra("wake", false) == true) window.decorView.post { startVoiceFromWake() }
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent?.getBooleanExtra("wake", false) == true) window.decorView.post { startVoiceFromWake() }
+    }
+
+    /** Called when "Hey Zara" is heard: bring up a normal voice session. */
+    fun startVoiceFromWake() {
+        if (voice.sessionActive) return
+        beginVoice()
+    }
+
+    fun activateWake() {
+        prefs.put("wake_on", true); WakeService.start(this); rebuildCurrent()
+    }
+
+    fun requestWake() { pendingWake = true; requestPerm(501, Manifest.permission.RECORD_AUDIO) }
+
+    /** Single entry point for starting a session: the wake service must release the mic first. */
+    private fun beginVoice() {
+        WakeService.pause()
+        when (val r = voice.startSession()) {
+            null -> voiceActive = true
+            "need_permission" -> { pendingVoice = true; requestPerm(501, Manifest.permission.RECORD_AUDIO) }
+            else -> { toast(r); WakeService.resume() }
+        }
+        brain.refresh(); updateMic()
     }
 
     private fun wireVoice() {
@@ -63,7 +101,7 @@ class MainActivity : Activity(), BrainListener {
         voice.onPartial = { partial = it; brain.listeners.toList().forEach { l -> l.stateChanged() } }
         voice.onLevel = { brain.level(it) }
         voice.onError = { m -> toast(m); brain.flashError(m) }
-        voice.onSessionEnded = { reason -> partial = ""; brain.refresh(); if (reason.isNotBlank()) toast(reason); updateMic() }
+        voice.onSessionEnded = { reason -> partial = ""; voiceActive = false; WakeService.resume(); brain.refresh(); if (reason.isNotBlank()) toast(reason); updateMic() }
         voice.onFinal = { text, conf ->
             partial = ""
             if (conf in 0f..0.35f) {
@@ -207,12 +245,7 @@ class MainActivity : Activity(), BrainListener {
     fun toggleVoice() {
         if (voice.state == ZVoice.VState.SPEAKING) { voice.interrupt(); return }
         if (voice.sessionActive) { voice.stopSession(""); return }
-        when (val r = voice.startSession()) {
-            null -> {}
-            "need_permission" -> { pendingVoice = true; requestPerm(501, Manifest.permission.RECORD_AUDIO) }
-            else -> toast(r)
-        }
-        brain.refresh(); updateMic()
+        beginVoice()
     }
 
     override fun stateChanged() {
@@ -299,15 +332,19 @@ class MainActivity : Activity(), BrainListener {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         val ok = grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED
         if (requestCode == 501) {
-            if (ok && pendingVoice) { pendingVoice = false; toggleVoice() }
-            else if (!ok) { pendingVoice = false; toast("Microphone permission is needed for voice. Text chat still works.") }
+            if (ok && pendingWake) { pendingWake = false; activateWake() }
+            else if (ok && pendingVoice) { pendingVoice = false; toggleVoice() }
+            else if (!ok) { pendingVoice = false; pendingWake = false; toast("Microphone permission is needed for voice. Text chat still works.") }
         }
         screens.lastOrNull()?.onPermission(requestCode, ok)
     }
 
+    override fun onStart() { super.onStart(); visible = this }
+
     override fun onResume() {
         super.onResume()
         resumedNow = true
+        if (prefs.b("wake_on", false) && !WakeService.running()) WakeService.start(this)
         val s = screens.lastOrNull()
         if (s is PermissionsScreen || s is AppControlScreen || s is OverlayScreen || s is VoiceSetupScreen) rebuildCurrent()
         if (prefs.b("overlay_on", false) && OverlayService.canDraw(this) && OverlayService.instance == null) OverlayService.start(this)
@@ -318,6 +355,7 @@ class MainActivity : Activity(), BrainListener {
     override fun onPause() { resumedNow = false; super.onPause() }
 
     override fun onStop() {
+        if (visible === this) visible = null
         // Android doesn't allow reliable background listening; end the session so the mic state is never ambiguous.
         if (voice.sessionActive) voice.stopSession("")
         super.onStop()

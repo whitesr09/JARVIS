@@ -1,6 +1,7 @@
 package com.nshd.jarvis
 
 import android.accessibilityservice.AccessibilityService
+import android.graphics.Rect
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
@@ -71,6 +72,41 @@ class ZaraAccessibilityService : AccessibilityService() {
         if (targets.isEmpty()) return A11yOutcome(false, "I couldn't find a visible control labeled “$label”.")
         if (targets.size > 1) return A11yOutcome(false, "I found ${targets.size} controls matching “$label”, so I'm not guessing. Please be more specific or tap it yourself.", ambiguous = true)
         return A11yOutcome(targets[0].performAction(AccessibilityNodeInfo.ACTION_CLICK), "")
+    }
+
+    private fun label(n: AccessibilityNodeInfo): String =
+        ((n.contentDescription?.toString() ?: "") + " " + (n.text?.toString() ?: "")).trim()
+
+    private fun collect(n: AccessibilityNodeInfo?, depth: Int, pattern: Regex, skip: Regex?, out: MutableList<Pair<Int, AccessibilityNodeInfo>>) {
+        if (n == null || depth > 45) return
+        val l = label(n)
+        if (l.isNotEmpty() && n.isVisibleToUser && pattern.containsMatchIn(l) && (skip == null || !skip.containsMatchIn(l))) {
+            val r = Rect(); n.getBoundsInScreen(r); out.add(r.top to n)
+        }
+        for (i in 0 until n.childCount) collect(n.getChild(i), depth + 1, pattern, skip, out)
+    }
+
+    /** Taps the top-most visible node whose label matches [pattern] (used for "play the first result"). */
+    fun clickFirstMatching(pattern: Regex, skip: Regex?): A11yOutcome {
+        val root = rootInActiveWindow ?: return A11yOutcome(false, "No window content is available yet.")
+        if (root.packageName?.toString() in GUARD) return A11yOutcome(false, "I don't interact with system dialogs.", blocked = true)
+        val found = ArrayList<Pair<Int, AccessibilityNodeInfo>>()
+        collect(root, 0, pattern, skip, found)
+        val best = found.minByOrNull { it.first } ?: return A11yOutcome(false, "No matching item on screen yet.")
+        var n: AccessibilityNodeInfo? = best.second
+        var hops = 0
+        while (n != null && !n.isClickable && hops++ < 6) n = n.parent
+        if (n == null || !n.isClickable) return A11yOutcome(false, "The matching item can't be tapped.")
+        return A11yOutcome(n.performAction(AccessibilityNodeInfo.ACTION_CLICK), "")
+    }
+
+    /** True if any visible node's label contains one of [words] (case-insensitive). Used to confirm playback. */
+    fun hasText(words: List<String>): Boolean {
+        val root = rootInActiveWindow ?: return false
+        val re = Regex(words.joinToString("|") { Regex.escape(it) }, RegexOption.IGNORE_CASE)
+        val found = ArrayList<Pair<Int, AccessibilityNodeInfo>>()
+        collect(root, 0, re, null, found)
+        return found.isNotEmpty()
     }
 
     fun typeText(text: String): A11yOutcome {

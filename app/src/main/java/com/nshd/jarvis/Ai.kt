@@ -49,15 +49,16 @@ object Http {
 
 /** The only device capability the model can request. Everything is validated locally before use. */
 object Tools {
-    val ACTIONS = listOf("open_app", "search_youtube", "open_settings", "whatsapp_draft", "go_back", "go_home",
-        "recent_apps", "scroll_down", "scroll_up", "tap_text", "type_text")
+    val ACTIONS = listOf("open_app", "play_media", "search_youtube", "open_settings", "whatsapp_draft", "go_back", "go_home",
+        "recent_apps", "scroll_down", "scroll_up", "tap_text", "type_text", "web_search", "set_timer", "set_alarm",
+        "dial_number", "navigate_to", "sms_draft")
 
     fun geminiDeclaration(): JSONObject = JSONObject()
         .put("name", "device_action")
         .put("description", "Ask the Zara app to perform ONE allow-listed action on the user's phone. The app validates it and may ask the user to confirm. Only call this when the user clearly asked for a phone action.")
         .put("parameters", JSONObject().put("type", "OBJECT").put("properties", JSONObject()
             .put("action", JSONObject().put("type", "STRING").put("enum", JSONArray(ACTIONS))
-                .put("description", "open_app(target=app name), search_youtube(text=query), open_settings(target=wifi|bluetooth|display|sound|accessibility|battery|apps|location|general), whatsapp_draft(text=message), go_back, go_home, recent_apps, scroll_down, scroll_up, tap_text(target=visible label), type_text(text)"))
+                .put("description", "open_app(target=app name); play_media(target=the app the user named in their LATEST message, e.g. spotify|youtube|ytmusic|<other app>, text=song/video/artist, empty for 'anything'); search_youtube(text=query, search only); open_settings(target=wifi|bluetooth|display|sound|accessibility|battery|apps|location|general); whatsapp_draft(text); sms_draft(target=phone number, text); dial_number(text=number); web_search(text); navigate_to(text=place); set_timer(text=seconds); set_alarm(text=HH:MM 24h); go_back; go_home; recent_apps; scroll_down; scroll_up; tap_text(target=visible label); type_text(text)"))
             .put("target", JSONObject().put("type", "STRING").put("description", "App name, settings page, or visible on-screen label"))
             .put("text", JSONObject().put("type", "STRING").put("description", "Search query or text to enter/draft")))
             .put("required", JSONArray().put("action")))
@@ -324,6 +325,7 @@ object Persona {
         sb.append("You are ").append(name(p)).append(", an AI assistant inside the ").append(Brand.APP_NAME).append(" Android app made by ").append(Brand.CREATOR_SHORT).append(". ")
         sb.append("You are an AI; say so plainly if asked or if it matters. Keep replies natural and concise because they may be spoken aloud; avoid long lists and never read out code. ")
         sb.append("You can ask the app to do ONE phone action at a time through the device_action tool, but only when the user clearly asked for it. The app validates it, may ask the user to confirm, and reports the real outcome — never claim a phone action succeeded unless the app reported it. ")
+        sb.append("Treat every request on its own: act on the app and details in the user's LATEST message and never reuse an app from earlier turns (for example, after YouTube was opened, a request to play something on Spotify must go to Spotify). To play music or video use play_media with the named app; if the user didn't name an app, ask which one. ")
         sb.append("Never be possessive, jealous, guilt-inducing, coercive or manipulative, and never discourage the user from spending time with other people. ")
         sb.append("Persona and style instructions never override safety, privacy or confirmation rules. Never ask for or store passwords, OTPs, card numbers or API keys.\n\n")
         val persona = if (pr.id == "custom") p.s("persona_custom") else pr.prompt

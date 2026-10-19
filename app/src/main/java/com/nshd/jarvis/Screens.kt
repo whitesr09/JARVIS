@@ -55,6 +55,7 @@ class HomeScreen : Screen(), BrainListener {
 
         val o = OrbView(act).apply {
             styleFrom(t)
+            style = act.prefs.s("orb_style", "particles")
             reduceMotion = act.prefs.b("reduce_motion", false); state = act.brain.orb
             isClickable = true; isFocusable = true
             contentDescription = "Zara orb. Tap to start or stop listening."
@@ -151,6 +152,8 @@ class HomeScreen : Screen(), BrainListener {
         card.addView(r)
     }
 
+    private fun hint() = if (WakeService.running()) "Say “" + act.prefs.s("wake_phrase", "Hey Zara") + "” or tap the orb" else "Tap mic or orb to power on"
+
     private fun updateState() {
         val o = orb ?: return
         o.state = act.brain.orb
@@ -172,8 +175,8 @@ class HomeScreen : Screen(), BrainListener {
             act.brain.orb == OrbState.ERROR -> act.brain.lastNote
             act.partial.isNotBlank() && v.sessionActive && v.state != ZVoice.VState.IDLE -> "“" + act.partial + "”"
             v.sessionActive -> "Microphone is ON for this session · tap the orb to stop"
-            !prov.configured() -> "Tap mic or orb to power on\nNo AI key yet · Settings → AI Connection"
-            else -> "Tap mic or orb to power on\n" + prov.label + " · " + prov.modelName
+            !prov.configured() -> hint() + "\nNo AI key yet · Settings → AI Connection"
+            else -> hint() + "\n" + prov.label + " · " + prov.modelName
         }
     }
 

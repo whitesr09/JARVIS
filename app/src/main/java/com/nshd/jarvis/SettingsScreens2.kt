@@ -220,6 +220,55 @@ class AppControlScreen : Screen() {
         }.apply { setPadding(0, ui.dp(6), 0, 0) })
         col.addView(head)
 
+        // ---------- hands-free
+        col.addView(ui.section("Hands-free · wake phrase"))
+        val phrase = p.s("wake_phrase", "Hey Zara")
+        val running = WakeService.running()
+        val hf = ui.card(0)
+        hf.addView(ui.switchRow("mic", "Wake with “$phrase”", "Zara listens in the background (a notification is always shown) and opens when it hears the phrase.", p.b("wake_on", false)) { v ->
+            if (v) act.confirm("Turn on “$phrase”?",
+                "This keeps the microphone listening in the background while a notification is shown. Your phone's speech recogniser processes the audio — on some phones that uses Google's servers — and it uses extra battery. Nothing goes to your AI provider until after you say the phrase. You can turn it off any time.",
+                "Turn on", { if (act.voice.micGranted()) act.activateWake() else act.requestWake() }) { act.rebuildCurrent() }
+            else { p.put("wake_on", false); WakeService.stop(act); act.rebuildCurrent() }
+        })
+        col.addView(hf)
+        val st = ui.card(16)
+        st.addView(ui.tv(if (running) "● LISTENING FOR THE PHRASE" else "● OFF", 12f, if (running) t.ok else t.dim, true).apply { letterSpacing = 0.06f })
+        fun req(ok: Boolean, name: String, why: String, btn: String?, fn: () -> Unit) {
+            val r = ui.hbox().apply { setPadding(0, ui.dp(10), 0, 0) }
+            val tx = ui.vbox()
+            tx.addView(ui.tv((if (ok) "✓ " else "○ ") + name, 14f, if (ok) t.text else t.warn, true))
+            tx.addView(ui.dim(why, 12f).apply { setPadding(0, ui.dp(2), 0, 0) })
+            r.addView(tx, ui.lp(0, -2, 1f))
+            if (!ok && btn != null) r.addView(ui.button(btn, false) { fn() }.apply { minHeight = ui.dp(40); setPadding(ui.dp(14), ui.dp(6), ui.dp(14), ui.dp(6)) })
+            st.addView(r)
+        }
+        req(act.voice.micGranted(), "Microphone", "Required.", "Allow") { act.requestPerm(501, android.Manifest.permission.RECORD_AUDIO) }
+        req(OverlayService.canDraw(act), "Display over other apps", "Lets Zara open itself when it hears you. Without it you'll get a tap-to-talk notification instead.", "Allow") {
+            act.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + act.packageName)))
+        }
+        val pmgr = act.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+        req(pmgr.isIgnoringBatteryOptimizations(act.packageName), "Allowed to run in the background", "Many phones (vivo, Xiaomi, Oppo…) stop background listening unless battery limits are removed for this app.", "Open") {
+            try { act.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) } catch (_: Exception) { act.openAppSettings() }
+        }
+        col.addView(st, ui.lpm(tp = 10))
+
+        val hs = ui.card(0)
+        val sens = p.i("wake_sens", 1)
+        val chips = ui.hbox().apply { setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(4)) }
+        for ((i, lb) in listOf("Strict", "Balanced", "Loose").withIndex()) chips.addView(ui.chip(lb, sens == i) { p.put("wake_sens", i); act.rebuildCurrent() }, ui.lpm(r = 8))
+        hs.addView(ui.tv("Sensitivity", 14f, t.text, true).apply { setPadding(ui.dp(14), ui.dp(12), ui.dp(14), 0) })
+        hs.addView(chips)
+        hs.addView(ui.dim("Strict needs “hey zara” (and close spellings). Balanced also accepts “hey sara”. Loose reacts to just “zara”, so it may trigger on other talk.").apply { setPadding(ui.dp(14), 0, ui.dp(14), ui.dp(12)) })
+        hs.addView(ui.divider())
+        hs.addView(ui.row("pencil", "Wake phrase", "“$phrase” — change it if another phrase works better on your phone") {
+            act.promptText("Wake phrase", "e.g. Hey Zara", phrase) { v -> p.put("wake_phrase", v.take(30)); if (WakeService.running()) { WakeService.stop(act); WakeService.start(act) }; act.rebuildCurrent() }
+        })
+        hs.addView(ui.divider())
+        hs.addView(ui.switchRow(null, "Beep when I'm heard", "A short tone so you know it woke up.", p.b("wake_beep", true)) { p.put("wake_beep", it) })
+        col.addView(hs, ui.lpm(tp = 10))
+        col.addView(ui.dim("Honest limits: this uses Android's speech recogniser in a loop, not a dedicated low-power wake-word engine. It uses more battery, some phones make a faint beep each time it restarts, it can't hear you while the screen is locked, and it restarts only when you open the app (not after rebooting). A true low-power wake engine is the planned upgrade.").apply { setPadding(ui.dp(6), ui.dp(10), ui.dp(6), 0) })
+
         col.addView(ui.section("Accessibility service"))
         val a = ui.card(16)
         a.addView(ui.tv(if (on) "● ENABLED" else "● NOT ENABLED", 12f, if (on) t.ok else t.warn, true).apply { letterSpacing = 0.06f })
@@ -245,9 +294,9 @@ class AppControlScreen : Screen() {
 
         col.addView(ui.section("What works today"))
         val ex = ui.card(16)
-        ex.addView(ui.dim("• “Open YouTube” / “open Settings” / any installed app by name\n• “Search YouTube for lofi beats” (you pick the video)\n• “Open Bluetooth settings” (also Wi-Fi, display, sound, battery, location, apps)\n• “Send WhatsApp message saying I'm on my way” → draft opens, you choose the chat and press Send\n• With Accessibility: “go back”, “go home”, “scroll down”, “tap Search”, “type hello”\n• Ask in plain language — the AI can request one of these actions, and Zara still checks and confirms it", 13.5f))
+        ex.addView(ui.dim("• “Open YouTube” / “open Settings” / any installed app by name\n• “Play kesariya on Spotify” / “open Spotify and play lofi” / “play … on YouTube Music” (also any player app by name)\n• “Play iron man trailer on YouTube” — starts the top result (needs Accessibility)\n• “Search YouTube for …”, “google …”, “navigate to …”, “set a timer for 5 minutes”, “set an alarm for 6:30 pm”\n• “Call 98765 43210” / “text 98765 43210 saying …” open the dialer / a drafted message for you to send\n• “Open Bluetooth settings” (also Wi-Fi, display, sound, battery, location, apps)\n• “Send WhatsApp message saying I'm on my way” → draft opens, you choose the chat and press Send\n• With Accessibility: “go back”, “go home”, “scroll down”, “tap Search”, “type hello”\n• Ask in plain language — the AI can request one of these actions, and Zara still checks and confirms it", 13.5f))
         ex.addView(ui.tv("Honest limits", 13f, t.text, true).apply { setPadding(0, ui.dp(12), 0, ui.dp(4)) })
-        ex.addView(ui.dim("Some apps hide controls from Accessibility or block automation, so a step may be reported as “could not verify” or handed back to you. Calls, contact lookup, auto-playing a chosen video, Instagram posting and screen-sharing vision are not built yet.", 13f))
+        ex.addView(ui.dim("Some apps hide controls from Accessibility or block automation, so a step may be reported as “could not verify” or handed back to you. Contact-name lookup, placing calls by itself, Instagram posting and screen-sharing vision are not built yet.", 13f))
         col.addView(ex)
         col.addView(ui.button("Stop current task", false, true) { act.brain.stop(); act.toast("Stopped.") }, ui.lpm(tp = 12))
         return sub(ui, "App Control & Hands-Free", "Voice-driven phone actions, with guardrails", col)
@@ -301,6 +350,26 @@ class ThemeScreen : Screen() {
         ac.addView(ui.dim("Text colour is picked automatically so it stays readable on any accent.").apply { setPadding(0, ui.dp(4), 0, 0) })
         col.addView(ac)
 
+        col.addView(ui.section("Orb style"))
+        val curStyle = p.s("orb_style", "particles")
+        var orow = ui.hbox(false)
+        for ((i, e) in OrbStyles.all.withIndex()) {
+            val sel = e.first == curStyle
+            val cell = ui.vbox(8).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                background = ui.ripple(ui.shape(if (sel) Themes.alpha(t.accent, 36) else t.surface, 16f, if (sel) t.accent else t.stroke, if (sel) 2f else 1f), 16f)
+                isClickable = true; isFocusable = true; contentDescription = e.second + (if (sel) ", selected" else "")
+                setOnClickListener { p.put("orb_style", e.first); act.rebuildCurrent() }
+                val pv = OrbView(act).apply { styleFrom(t); style = e.first; reduceMotion = p.b("reduce_motion", false) }
+                addView(pv, LinearLayout.LayoutParams(ui.dp(96), ui.dp(96)))
+                addView(ui.tv(e.second + (if (sel) " ✓" else ""), 12.5f, t.text, true, Gravity.CENTER).apply { setPadding(0, ui.dp(2), 0, 0) })
+            }
+            orow.addView(cell, ui.lpm(0, -2, r = if (i % 2 == 0) 10 else 0, weight = 1f))
+            if (i % 2 == 1 || i == OrbStyles.all.size - 1) {
+                if (i % 2 == 0) orow.addView(View(act), ui.lpm(0, 1, weight = 1f))
+                col.addView(orow, ui.lpm(b = 10)); orow = ui.hbox(false)
+            }
+        }
         col.addView(ui.section("Motion"))
         val mo = ui.card(0)
         mo.addView(ui.switchRow(null, "Reduce motion", "Shows a still orb. Also automatic when Android battery saver is on.", p.b("reduce_motion", false)) { p.put("reduce_motion", it); o.reduceMotion = it })
@@ -328,7 +397,7 @@ class PrivacyScreen : Screen() {
         }
         info("Stays on this phone", "Chat history, saved memories, the task journal and your settings are stored in this app's private storage. There is no ${Brand.APP_NAME} server and no account or sign-up. API keys are stored encrypted with the Android Keystore.")
         info("Sent to your AI provider", "When you send a message (typed or spoken-then-recognized), the app sends it to the provider you set as Primary — along with recent messages, your persona text, and up to 30 saved memories if Memory is on. Nothing is sent to any other provider. Screen contents are never sent.")
-        info("Speech", "Speech recognition and text-to-speech use your phone's installed Android engines. Depending on your device, the recognizer (often Google's) may process audio on its servers — that's controlled by Android, not by this app.")
+        info("Speech & wake phrase", "Speech recognition and text-to-speech use your phone's installed Android engines. Depending on your device, the recognizer (often Google's) may process audio on its servers — that's controlled by Android, not by this app. If you turn on the wake phrase, that recogniser runs continuously in the background (a notification is always shown) and nothing is sent to your AI provider until after the phrase.")
         info("Location & weather", "If you allow approximate location, the Home weather card sends rounded coordinates to open-meteo.com when weather loads (at most once every 20 minutes). Nothing else uses location.")
         info("Limits of this app's claims", "Keys stored on a phone can't be made impossible to extract from a rooted or modified device. Voice matching isn't a lock. This app hasn't been independently audited.")
 

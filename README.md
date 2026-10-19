@@ -7,13 +7,16 @@ A native Kotlin Android app: a voice-first AI companion and assistant with an an
 ## What's in it
 - **Home** – orb with states (idle, listening, thinking, speaking, working, connected, error), greeting, voice status, optional real weather, quick actions.
 - **Chat** – streaming replies, stop button, send-again, conversation history (search / switch / delete), Markdown + code blocks, "Code" mode, copy / share, provider + model shown on every reply.
-- **Voice** – tap the orb or the centre mic. Partial transcripts are display-only; follow-ups work without repeating a wake phrase while a session is active; tap to interrupt Zara; low-confidence speech is shown for editing instead of acted on.
+- **Voice** – tap the orb or the centre mic, or turn on the experimental hands-free **"Hey Zara"** wake phrase. Partial transcripts are display-only; follow-ups work without repeating a wake phrase while a session is active; tap to interrupt Zara; low-confidence speech is shown for editing instead of acted on.
 - **Settings & Intelligence** – AI connection (Gemini + any OpenAI-compatible endpoint, test connection, model list refresh), language (incl. Manglish/Hinglish), persona presets + style dials + installed TTS voice, voice setup, Memory Core, permissions checklist, floating avatar, App Control & Hands-Free, Theme Studio, Privacy & Data Shield, About & Credits.
 - **Updates & Activity** – verified task history (COMPLETED / PARTIALLY_COMPLETED / FAILED / BLOCKED_BY_PERMISSION / NEEDS_USER_ACTION / COULD_NOT_VERIFY), things waiting for you, version and release notes.
 - **Code Workspace** – edit, copy, share, save through Android's file picker, open files, hand a saved file to any editor ("Open with…"). Zara never runs code.
 
+## Orb styles & voices
+Theme Studio offers five orb styles (Particles, Fluid, Aurora, Pulse, Waveform). Voice names (Aria, Nova, Kai…) are friendly labels for the voices installed on your phone, and you can rename any of them.
+
 ## Safety model (device actions)
-The AI can only request one allow-listed action (`open_app`, `search_youtube`, `open_settings`, `whatsapp_draft`, `go_back`, `go_home`, `recent_apps`, `scroll_down/up`, `tap_text`, `type_text`). Each request is validated, policy-checked, shown to you for confirmation when it is public or consequential (sending, typing, risky taps), executed, and then **verified** — success is only reported when it was observed. It is off until you enable it, never auto-taps permission/install dialogs, never fills password fields, and WhatsApp messages are drafts that you send yourself.
+The AI can only request one allow-listed action (`open_app`, `play_media`, `search_youtube`, `web_search`, `set_timer`, `set_alarm`, `dial_number`, `navigate_to`, `sms_draft`, `open_settings`, `whatsapp_draft`, `go_back`, `go_home`, `recent_apps`, `scroll_down/up`, `tap_text`, `type_text`). Each request is validated, policy-checked, shown to you for confirmation when it is public or consequential (sending, typing, risky taps), executed, and then **verified** — success is only reported when it was observed. It is off until you enable it, never auto-taps permission/install dialogs, never fills password fields, and WhatsApp messages are drafts that you send yourself.
 
 ## Setup
 1. Get a Gemini API key at https://aistudio.google.com/apikey (free tier limits and terms can change).

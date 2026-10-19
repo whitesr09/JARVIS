@@ -7,6 +7,8 @@
     <!-- Optional floating avatar (user grants it in Android Settings). -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Lets "set a timer / alarm" ask the Clock app directly. -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
     <!-- Kept from the starter: lets "open <any installed app>" find apps by name. -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesPermission" />
 
@@ -27,6 +29,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:screenOrientation="portrait"
+            android:launchMode="singleTop"
             android:windowSoftInputMode="adjustResize"
             android:configChanges="uiMode|fontScale|screenSize|smallestScreenSize|screenLayout|orientation|keyboardHidden">
             <intent-filter>
@@ -49,5 +52,6 @@
         </service>
 
         <service android:name=".OverlayService" android:exported="false" />
+        <service android:name=".WakeService" android:exported="false" android:foregroundServiceType="microphone" />
     </application>
 </manifest>
