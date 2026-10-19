@@ -4,7 +4,11 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
+import android.view.ViewOutlineProvider
 import android.text.InputType
 import android.util.TypedValue
 import android.view.Gravity
@@ -16,11 +20,24 @@ import android.widget.*
 class Ui(val ctx: Context, val t: ZTheme) {
     fun dp(v: Number): Int = (v.toFloat() * ctx.resources.displayMetrics.density + 0.5f).toInt()
     fun lp(w: Int = -1, h: Int = -2, weight: Float = 0f) = LinearLayout.LayoutParams(w, h, weight)
-    fun lpm(w: Int = -1, h: Int = -2, l: Int = 0, tp: Int = 0, r: Int = 0, b: Int = 0, weight: Float = 0f) =
-        LinearLayout.LayoutParams(w, h, weight).apply { setMargins(dp(l), dp(tp), dp(r), dp(b)) }
+    /**
+     * Margin-aware params. Width defaults to WRAP when only side margins are given (side-by-side items),
+     * and to MATCH otherwise (stacked items). Pass [w] explicitly to override.
+     */
+    fun lpm(w: Int = UNSET, h: Int = -2, l: Int = 0, tp: Int = 0, r: Int = 0, b: Int = 0, weight: Float = 0f): LinearLayout.LayoutParams {
+        val width = if (w != UNSET) w else if (tp == 0 && b == 0 && (l != 0 || r != 0)) -2 else -1
+        return LinearLayout.LayoutParams(width, h, weight).apply { setMargins(dp(l), dp(tp), dp(r), dp(b)) }
+    }
+    private companion object { const val UNSET = Int.MIN_VALUE }
 
     fun shape(fill: Int, radius: Float = 16f, stroke: Int = 0, strokeDp: Float = 1f) = GradientDrawable().apply {
         setColor(fill); cornerRadius = dp(radius).toFloat(); if (stroke != 0) setStroke(dp(strokeDp), stroke)
+    }
+
+    /** Touch feedback: an accent ripple bounded by a rounded mask (or a plain rectangle when radius is 0). */
+    fun ripple(content: Drawable?, radius: Float = 0f): Drawable {
+        val mask: Drawable = if (radius > 0f) shape(Color.WHITE, radius) else ColorDrawable(Color.WHITE)
+        return RippleDrawable(ColorStateList.valueOf(Themes.alpha(t.accent, 64)), content, mask)
     }
 
     fun pageBackground(): GradientDrawable =
@@ -39,7 +56,10 @@ class Ui(val ctx: Context, val t: ZTheme) {
     fun hbox(center: Boolean = true) = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; if (center) gravity = Gravity.CENTER_VERTICAL }
     fun space(h: Int) = View(ctx).apply { layoutParams = lp(-1, dp(h)) }
 
-    fun card(pad: Int = 16): LinearLayout = vbox(pad).apply { background = shape(t.surface, 20f, t.stroke) }
+    fun card(pad: Int = 16): LinearLayout = vbox(pad).apply {
+        background = shape(t.surface, 20f, t.stroke)
+        outlineProvider = ViewOutlineProvider.BACKGROUND; clipToOutline = true   // keeps row ripples inside the rounded corners
+    }
 
     fun divider() = View(ctx).apply { setBackgroundColor(t.stroke); layoutParams = lp(-1, dp(1)) }
 
@@ -51,8 +71,8 @@ class Ui(val ctx: Context, val t: ZTheme) {
         text = label; setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f); typeface = Typeface.DEFAULT_BOLD
         gravity = Gravity.CENTER; minHeight = dp(48); setPadding(dp(18), dp(10), dp(18), dp(10))
         val c = if (danger) t.danger else t.accent
-        if (filled) { setTextColor(Themes.bestOn(c)); background = shape(c, 26f) }
-        else { setTextColor(if (danger) t.danger else t.accentText); background = shape(Color.TRANSPARENT, 26f, c, 1.4f) }
+        if (filled) { setTextColor(Themes.bestOn(c)); background = ripple(shape(c, 26f), 26f) }
+        else { setTextColor(if (danger) t.danger else t.accentText); background = ripple(shape(Color.TRANSPARENT, 26f, c, 1.4f), 26f) }
         isClickable = true; isFocusable = true
         setOnClickListener { onClick() }
     }
@@ -60,8 +80,8 @@ class Ui(val ctx: Context, val t: ZTheme) {
     fun chip(label: String, selected: Boolean, onClick: () -> Unit): TextView = TextView(ctx).apply {
         text = label; setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f); gravity = Gravity.CENTER; minHeight = dp(40)
         setPadding(dp(16), dp(8), dp(16), dp(8))
-        if (selected) { setTextColor(t.onAccent); background = shape(t.accent, 22f) }
-        else { setTextColor(t.text); background = shape(Color.TRANSPARENT, 22f, t.stroke, 1.2f) }
+        if (selected) { setTextColor(t.onAccent); background = ripple(shape(t.accent, 22f), 22f) }
+        else { setTextColor(t.text); background = ripple(shape(Color.TRANSPARENT, 22f, t.stroke, 1.2f), 22f) }
         isClickable = true; isFocusable = true
         setOnClickListener { onClick() }
     }
@@ -75,7 +95,7 @@ class Ui(val ctx: Context, val t: ZTheme) {
     }
 
     fun iconButton(kind: String, desc: String, size: Int = 44, onClick: () -> Unit): FrameLayout = FrameLayout(ctx).apply {
-        background = shape(t.surface, 14f, t.stroke)
+        background = ripple(shape(t.surface, 14f, t.stroke), 14f)
         minimumWidth = dp(size); minimumHeight = dp(size)
         layoutParams = LinearLayout.LayoutParams(dp(size), dp(size))
         contentDescription = desc; isClickable = true; isFocusable = true
@@ -94,7 +114,7 @@ class Ui(val ctx: Context, val t: ZTheme) {
             addView(col, lp(0, -2, 1f))
             if (trailing != null) addView(trailing, lpm(l = 8))
             if (chevron && onClick != null) addView(tv("›", 22f, t.dim), lpm(l = 8))
-            if (onClick != null) { isClickable = true; isFocusable = true; setOnClickListener { onClick() } }
+            if (onClick != null) { background = ripple(null, 0f); isClickable = true; isFocusable = true; setOnClickListener { onClick() } }
         }
 
     fun switchView(checked: Boolean, desc: String, onChange: (Boolean) -> Unit): Switch = Switch(ctx).apply {
@@ -108,7 +128,7 @@ class Ui(val ctx: Context, val t: ZTheme) {
     fun switchRow(iconKind: String?, title: String, sub: String?, checked: Boolean, onChange: (Boolean) -> Unit): LinearLayout {
         val sw = switchView(checked, title, onChange)
         val r = row(iconKind, title, sub, sw, false, null)
-        r.isClickable = true; r.isFocusable = true
+        r.background = ripple(null, 0f); r.isClickable = true; r.isFocusable = true
         r.setOnClickListener { sw.toggle() }
         return r
     }

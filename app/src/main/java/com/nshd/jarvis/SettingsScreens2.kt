@@ -264,7 +264,7 @@ class ThemeScreen : Screen() {
         val cur = p.s("theme", Brand.DEFAULT_THEME)
 
         val prev = ui.card(16)
-        val o = OrbView(act).apply { accent = t.accent; accent2 = t.accent2; errorColor = t.danger; reduceMotion = p.b("reduce_motion", false) }
+        val o = OrbView(act).apply { styleFrom(t); reduceMotion = p.b("reduce_motion", false) }
         prev.addView(o, ui.lpm(ui.dp(120), ui.dp(120)).apply { gravity = Gravity.CENTER_HORIZONTAL })
         val pr = ui.hbox().apply { setPadding(0, ui.dp(10), 0, 0); gravity = Gravity.CENTER }
         pr.addView(ui.statusChip("COMPLETED"), ui.lpm(r = 8)); pr.addView(ui.chip("Sample", true) {}, ui.lpm(r = 8)); pr.addView(ui.button("Button") {})

@@ -107,13 +107,16 @@ enum class OrbState(val label: String) {
 }
 
 /**
- * Dotted particle orb. Drawn with a fixed, modest point count; animation stops when the view is
- * hidden, when reduce-motion is on, or when Android battery saver is active (static frame instead).
+ * Dotted particle orb: a lavender disc, a dense front-hemisphere dot cloud (denser toward the rim because
+ * of the projection), and two slowly orbiting rings. Everything is drawn inside the view bounds.
+ * Animation stops when hidden, with reduce-motion, or in Android battery saver (static frame instead).
  */
 class OrbView(ctx: Context) : View(ctx) {
     var accent = Color.WHITE
     var accent2 = Color.GRAY
     var errorColor = Color.RED
+    var discHi = Color.WHITE
+    var discLo = Color.LTGRAY
     var reduceMotion = false
         set(v) { field = v; restart() }
     var state = OrbState.IDLE
@@ -121,14 +124,19 @@ class OrbView(ctx: Context) : View(ctx) {
     var level = 0f
     private val dots: Array<FloatArray>
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
     private var running = false
     private val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
     private val tick = object : Runnable {
         override fun run() { if (!running) return; invalidate(); postDelayed(this, 33L) }
     }
+    private var cacheKey = 0L
+    private var glow: Shader? = null
+    private var disc: Shader? = null
+    private var ring: Shader? = null
 
     init {
-        val n = if (pm.isPowerSaveMode) 220 else 360
+        val n = if (pm.isPowerSaveMode) 420 else 820
         dots = Array(n) { i ->
             val y = 1f - (i / (n - 1f)) * 2f
             val r = sqrt(max(0f, 1f - y * y))
@@ -136,6 +144,13 @@ class OrbView(ctx: Context) : View(ctx) {
             floatArrayOf(cos(th) * r, y, sin(th) * r)
         }
         contentDescription = "Zara status orb"
+    }
+
+    fun styleFrom(t: ZTheme) {
+        accent = t.accent; accent2 = t.accent2; errorColor = t.danger
+        discHi = if (t.dark) Themes.mix(t.surface2, t.text, 0.14f) else Color.WHITE
+        discLo = Themes.mix(if (t.dark) t.surface else t.bg2, Color.parseColor("#8E55E8"), if (t.dark) 0.16f else 0.14f)
+        cacheKey = 0L; invalidate()
     }
 
     private fun animated() = !reduceMotion && !pm.isPowerSaveMode
@@ -149,43 +164,69 @@ class OrbView(ctx: Context) : View(ctx) {
     override fun onDraw(c: Canvas) {
         val w = width.toFloat(); val h = height.toFloat()
         val cx = w / 2f; val cy = h / 2f
-        val R = min(w, h) * 0.40f
-        val tm = if (animated()) SystemClock.uptimeMillis() / 1000f else 0.6f
-        val col = if (state == OrbState.ERROR) errorColor else accent
-        val col2 = if (state == OrbState.ERROR) errorColor else accent2
+        val s = min(w, h)
+        val bigR = s * 0.335f
+        val tm = if (animated()) SystemClock.uptimeMillis() / 1000f else 0.8f
+        val err = state == OrbState.ERROR
+        val col = if (err) errorColor else accent
+        val col2 = if (err) errorColor else accent2
+        val ringCol = if (err) errorColor else Themes.mix(accent2, Color.parseColor("#8E55E8"), 0.55f)
 
-        val speed = when (state) { OrbState.THINKING -> 1.5f; OrbState.LISTENING -> 0.55f; OrbState.SPEAKING -> 0.8f; OrbState.EXECUTING -> 1.1f; else -> 0.22f }
+        val key = (w.toInt() * 31L + h.toInt()) * 31L + col * 17L + col2 + discHi * 7L + discLo * 13L
+        if (key != cacheKey) {
+            cacheKey = key
+            glow = RadialGradient(cx, cy, s * 0.49f, intArrayOf(Themes.alpha(col, 72), Themes.alpha(col, 0)), floatArrayOf(0.5f, 1f), Shader.TileMode.CLAMP)
+            disc = RadialGradient(cx - bigR * 0.25f, cy - bigR * 0.3f, bigR * 1.25f, intArrayOf(Themes.alpha(discHi, 240), Themes.alpha(discLo, 225)), null, Shader.TileMode.CLAMP)
+            ring = SweepGradient(cx, cy, intArrayOf(Themes.alpha(ringCol, 0), Themes.alpha(ringCol, 230), Themes.alpha(ringCol, 0)), floatArrayOf(0f, 0.5f, 1f))
+        }
+
+        val speed = when (state) { OrbState.THINKING -> 1.5f; OrbState.LISTENING -> 0.5f; OrbState.SPEAKING -> 0.75f; OrbState.EXECUTING -> 1.1f; else -> 0.2f }
         val ang = tm * speed
-        val breathe = 1f + 0.022f * sin(tm * 1.4f) + (if (state == OrbState.LISTENING || state == OrbState.SPEAKING) level * 0.07f else 0f)
-        val ca = cos(ang); val sa = sin(ang)
-        val tilt = 0.35f; val ct = cos(tilt); val st = sin(tilt)
+        val lv = if (state == OrbState.LISTENING || state == OrbState.SPEAKING) level else 0f
+        val breathe = 1f + 0.02f * sin(tm * 1.4f) + lv * 0.06f
+        val R = bigR * breathe
 
-        // soft halo
-        paint.shader = RadialGradient(cx, cy, R * 1.45f, intArrayOf(Themes.alpha(col, 70), Themes.alpha(col, 0)), floatArrayOf(0.55f, 1f), Shader.TileMode.CLAMP)
-        c.drawCircle(cx, cy, R * 1.45f, paint)
+        paint.shader = glow; c.drawCircle(cx, cy, s * 0.49f, paint)
+        paint.shader = disc; c.drawCircle(cx, cy, R * 0.99f, paint)
         paint.shader = null
 
-        val base = max(1.2f, R / 95f)
+        val ca = cos(ang); val sa = sin(ang)
+        val tilt = 0.32f; val ct = cos(tilt); val st = sin(tilt)
+        val base = max(0.9f, R / 135f)
         for (i in dots.indices) {
             val d = dots[i]
             val x1 = d[0] * ca + d[2] * sa
             val z1 = -d[0] * sa + d[2] * ca
             val y2 = d[1] * ct - z1 * st
             val z2 = d[1] * st + z1 * ct
-            val depth = (z2 + 1f) / 2f
-            var bright = 0.35f + 0.65f * depth
-            var rad = base * (0.7f + 1.5f * depth)
+            if (z2 < -0.12f) continue                      // front hemisphere only, like a lit globe
+            val depth = ((z2 + 1f) / 2f).coerceIn(0f, 1f)
+            var bright = 0.3f + 0.7f * depth
+            var rad = base * (0.55f + 1.4f * depth)
             var disp = 1f
             when (state) {
-                OrbState.THINKING -> bright = (bright + 0.45f * (0.5f + 0.5f * sin(d[1] * 5f - tm * 4.5f))).coerceIn(0f, 1f)
+                OrbState.THINKING -> bright = (bright + 0.5f * (0.5f + 0.5f * sin(d[1] * 5f - tm * 4.5f))).coerceIn(0f, 1f)
                 OrbState.SPEAKING -> disp = 1f + 0.05f * sin(tm * 9f + i * 0.7f) * (0.4f + level)
-                OrbState.LISTENING -> disp = 1f + 0.035f * sin(tm * 3f + i * 0.3f) * (0.3f + level * 1.6f)
+                OrbState.LISTENING -> disp = 1f + 0.03f * sin(tm * 3f + i * 0.3f) * (0.3f + level * 1.6f)
                 OrbState.EXECUTING -> { val rg = (sin(tm * 3f - hypot(d[0], d[1]) * 4f) * 0.5f + 0.5f); bright = (bright + 0.4f * rg).coerceIn(0f, 1f); rad *= (1f + 0.25f * rg) }
                 else -> {}
             }
-            paint.color = Themes.alpha(Themes.mix(col2, col, depth), (70 + 185 * bright).toInt().coerceIn(0, 255))
-            c.drawCircle(cx + x1 * R * breathe * disp, cy + y2 * R * breathe * disp, rad, paint)
+            paint.color = Themes.alpha(Themes.mix(col2, col, depth), (60 + 195 * bright).toInt().coerceIn(0, 255))
+            c.drawCircle(cx + x1 * R * disp, cy + y2 * R * disp, rad, paint)
         }
+
+        // orbiting rings (sweep gradient makes each a fading arc)
+        ringPaint.shader = ring
+        val spin = tm * (if (state == OrbState.THINKING) 120f else 38f)
+        ringPaint.strokeWidth = max(1.5f, s * 0.006f)
+        c.save(); c.rotate(spin, cx, cy)
+        c.drawCircle(cx, cy, R * (1.14f + lv * 0.05f), ringPaint)
+        c.restore()
+        ringPaint.strokeWidth = max(1f, s * 0.0035f); ringPaint.alpha = 130
+        c.save(); c.rotate(-spin * 0.6f + 140f, cx, cy)
+        c.drawCircle(cx, cy, R * 1.26f, ringPaint)
+        c.restore()
+        ringPaint.alpha = 255; ringPaint.shader = null
     }
 
     override fun onMeasure(wSpec: Int, hSpec: Int) {

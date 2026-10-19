@@ -54,7 +54,7 @@ class HomeScreen : Screen(), BrainListener {
         col.addView(header)
 
         val o = OrbView(act).apply {
-            accent = t.accent; accent2 = t.accent2; errorColor = t.danger
+            styleFrom(t)
             reduceMotion = act.prefs.b("reduce_motion", false); state = act.brain.orb
             isClickable = true; isFocusable = true
             contentDescription = "Zara orb. Tap to start or stop listening."
@@ -81,23 +81,33 @@ class HomeScreen : Screen(), BrainListener {
         col.addView(wh, ui.lpm(tp = 18))
         buildWeather()
 
-        // quick actions
+        // quick actions: icon + title + one-line subtitle
+        val memCount = act.db.memories().size
         val tiles = listOf(
-            Triple("chat", "Chat") { act.tab(1) }, Triple("apps", "Open app") { openAppDialog() },
-            Triple("memory", "Memory") { act.go(MemoryScreen()) }, Triple("code", "Code") { act.go(CodeScreen()) },
-            Triple("tasks", "Tasks") { act.tab(3) }, Triple("mic", "Voice setup") { act.go(VoiceSetupScreen()) })
-        for (r in 0 until 2) {
+            Triple("chat" to "Chat", "Talk or type") { act.tab(1) },
+            Triple("apps" to "Open app", "Launch by name") { openAppDialog() },
+            Triple("memory" to "Memories", "$memCount saved") { act.go(MemoryScreen()) },
+            Triple("code" to "Code", "Write & save files") { act.go(CodeScreen()) },
+            Triple("tasks" to "Tasks", "Verified activity log") { act.tab(3) },
+            Triple("globe" to "Language", Langs.current(act.prefs).label.substringBefore(" (")) { act.go(LanguageScreen()) })
+        for (r in 0 until 3) {
             val row = ui.hbox(false)
-            for (c in 0 until 3) {
-                val (ic, lb, fn) = tiles[r * 3 + c]
-                val tile = ui.vbox(12).apply {
-                    gravity = Gravity.CENTER_HORIZONTAL; background = ui.shape(t.surface, 18f, t.stroke); minimumHeight = ui.dp(84)
+            for (c in 0 until 2) {
+                val (head, sub, fn) = tiles[r * 2 + c]
+                val tile = ui.hbox().apply {
+                    setPadding(ui.dp(14), ui.dp(12), ui.dp(14), ui.dp(12)); minimumHeight = ui.dp(68)
+                    background = ui.ripple(ui.shape(t.surface, 18f, t.stroke), 18f)
                     isClickable = true; isFocusable = true; setOnClickListener { fn() }
-                    addView(ui.icon(ic, 26)); addView(ui.tv(lb, 12.5f, t.text, true, Gravity.CENTER).apply { setPadding(0, ui.dp(8), 0, 0) })
+                    contentDescription = head.second + ", " + sub
+                    addView(ui.icon(head.first, 26), ui.lpm(ui.dp(26), ui.dp(26), r = 12))
+                    val tx = ui.vbox()
+                    tx.addView(ui.tv(head.second, 14f, t.text, true))
+                    tx.addView(ui.dim(sub, 11.5f).apply { setPadding(0, ui.dp(2), 0, 0); maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END })
+                    addView(tx, ui.lp(0, -2, 1f))
                 }
-                row.addView(tile, ui.lpm(0, -2, r = if (c < 2) 10 else 0, weight = 1f))
+                row.addView(tile, ui.lpm(0, -2, r = if (c == 0) 10 else 0, weight = 1f))
             }
-            col.addView(row, ui.lpm(tp = 12))
+            col.addView(row, ui.lpm(tp = 10))
         }
         updateState()
         return ui.scroll(col, 0)
@@ -137,6 +147,7 @@ class HomeScreen : Screen(), BrainListener {
         c.addView(ui.tv(w.summary + (if (w.place.isNotBlank()) " · " + w.place else ""), 15f, ui.t.text, true))
         c.addView(ui.dim("Feels ${w.feelsC}° · H ${w.hiC}° L ${w.loC}° · ${w.humidity}% humidity").apply { setPadding(0, ui.dp(3), 0, 0) })
         r.addView(c, ui.lp(0, -2, 1f))
+        r.addView(ui.icon("cloud", 34, ui.t.accent), ui.lpm(ui.dp(34), ui.dp(34), l = 8))
         card.addView(r)
     }
 
@@ -161,8 +172,8 @@ class HomeScreen : Screen(), BrainListener {
             act.brain.orb == OrbState.ERROR -> act.brain.lastNote
             act.partial.isNotBlank() && v.sessionActive && v.state != ZVoice.VState.IDLE -> "“" + act.partial + "”"
             v.sessionActive -> "Microphone is ON for this session · tap the orb to stop"
-            !prov.configured() -> "No AI key yet · Settings → AI Connection"
-            else -> prov.label + " · " + prov.modelName + " · microphone off"
+            !prov.configured() -> "Tap mic or orb to power on\nNo AI key yet · Settings → AI Connection"
+            else -> "Tap mic or orb to power on\n" + prov.label + " · " + prov.modelName
         }
     }
 
@@ -266,9 +277,13 @@ class ChatScreen : Screen(), BrainListener {
         l.removeAllViews(); lastTv = null
         val msgs = act.brain.msgs
         if (msgs.isEmpty()) {
-            l.addView(ui.dim("Say hi, ask anything, or try “open YouTube”.", 14f).apply { gravity = Gravity.CENTER; setPadding(0, ui.dp(60), 0, 0) }, ui.lp())
+            l.addView(ui.tv("Hi, I'm " + Persona.name(act.prefs), 22f, ui.t.text, true, Gravity.CENTER).apply { setPadding(0, ui.dp(56), 0, ui.dp(6)) }, ui.lp())
+            l.addView(ui.dim("Ask anything, or try one of these:", 14f).apply { gravity = Gravity.CENTER }, ui.lp())
+            for (s in listOf("Open YouTube", "Remember that I prefer short answers", "Explain how recursion works")) {
+                l.addView(ui.chip(s, false) { input?.setText(s); input?.setSelection(s.length); input?.requestFocus() }, ui.lpm(-2, -2, tp = 10).apply { gravity = Gravity.CENTER_HORIZONTAL })
+            }
         }
-        for (m in msgs.takeLast(80)) l.addView(bubble(m), ui.lpm(tp = 10).apply { gravity = if (m.role == "user") Gravity.END else Gravity.START })
+        for (m in msgs.takeLast(80)) l.addView(bubble(m), ui.lpm(-2, -2, tp = 10).apply { gravity = if (m.role == "user") Gravity.END else Gravity.START })
         scrollDown()
     }
 

@@ -2,6 +2,8 @@
 
 **Verification key.** *Compiled* = Kotlin sources compile with kotlinc 2.0.20 against the android-34 `android.jar` (not a full Gradle/AGP build). *JVM-tested* = executed on a JVM test harness. *CI* = GitHub Actions build — **not yet run for this change**. *Device* = tested on a real phone — **nothing in this table has been tested on a device yet**.
 
+**v0.2.1 note.** The first real-device screenshots exposed a layout bug (rows collapsed into tall blank cards because of a match-parent chevron). It is fixed and every call site was audited, but the fix itself is still unverified on a device.
+
 | Feature | Status | Permissions / API needed | Verified | Known limitation |
 |---|---|---|---|---|
 | Home / Chat / Settings / Updates navigation + sub-screens | Implemented | – | Compiled | Not visually reviewed on a device |

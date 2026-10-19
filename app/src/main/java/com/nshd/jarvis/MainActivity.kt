@@ -128,7 +128,7 @@ class MainActivity : Activity(), BrainListener {
     private fun updateMic() {
         val fab = micFab ?: return
         val on = voice.sessionActive
-        fab.background = ui.shape(if (on) theme.accent else theme.surface2, 32f, if (on) theme.accent else theme.stroke, 1.5f)
+        fab.background = ui.ripple(ui.shape(if (on) theme.accent else theme.surface2, 32f, if (on) theme.accent else theme.stroke, 1.5f), 32f)
         fab.removeAllViews()
         val fg = if (on) theme.onAccent else theme.text
         fab.addView(IconView(this, if (voice.state == ZVoice.VState.SPEAKING) "stop" else "mic", fg), FrameLayout.LayoutParams(ui.dp(28), ui.dp(28), Gravity.CENTER))
@@ -144,7 +144,7 @@ class MainActivity : Activity(), BrainListener {
             p.second.color = if (sel) theme.accentText else theme.dim
             p.second.invalidate()
             (p.first.getChildAt(1) as TextView).setTextColor(if (sel) theme.accentText else theme.dim)
-            p.first.background = if (sel) ui.shape(com.nshd.jarvis.Themes.alpha(theme.accent, 36), 22f) else null
+            p.first.background = ui.ripple(if (sel) ui.shape(com.nshd.jarvis.Themes.alpha(theme.accent, 36), 22f) else null, 22f)
             map[i] = i
         }
     }

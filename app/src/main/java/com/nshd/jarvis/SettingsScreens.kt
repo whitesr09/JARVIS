@@ -119,7 +119,7 @@ class AiConnectionScreen : Screen() {
             val c = ui.chip(m, m == model.text.toString().trim()) { model.setText(m); p.put("gemini_model", m); act.rebuildCurrent() }
             c.measure(0, 0)
             if (w + c.measuredWidth > maxW) { chipsBox.addView(rowL); rowL = ui.hbox(false); w = 0 }
-            rowL.addView(c, ui.lpm(r = 8, b = 8)); w += c.measuredWidth + ui.dp(8)
+            rowL.addView(c, ui.lpm(-2, -2, r = 8, b = 8)); w += c.measuredWidth + ui.dp(8)
         }
         chipsBox.addView(rowL)
         g.addView(chipsBox, ui.lpm(tp = 8))

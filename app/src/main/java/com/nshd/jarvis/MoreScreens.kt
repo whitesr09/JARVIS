@@ -38,6 +38,8 @@ class ActivityScreen : Screen() {
 
         col.addView(ui.section("Release notes"))
         col.addView(ui.card(16).apply {
+            addView(ui.tv("0.2.1 — layout fixes & polish", 14f, t.text, true))
+            addView(ui.dim("• Fixed settings/home rows that rendered as tall blank cards\n• Denser orb with lavender disc and orbiting rings (no clipped halo)\n• Touch ripples, rounded-clip cards, richer Home tiles and chat start screen", 13f).apply { setPadding(0, ui.dp(8), 0, ui.dp(14)) })
             addView(ui.tv("0.2.0 — Zara AI", 14f, t.text, true))
             addView(ui.dim("• New multi-screen app: Home, Chat, Settings, Activity\n• Streaming Gemini chat with stop, retry and conversation history\n• OpenAI-compatible provider adapter\n• Keys encrypted with Android Keystore\n• Persona, language and installed-voice settings\n• Local memory with search, edit, export\n• Typed, confirmed device actions with verified outcomes\n• Optional accessibility actions and floating avatar\n• Themes: Sunset, AMOLED, Dark, Light\n\nNot built yet: wake phrase, Gemini Live audio, screen-sharing vision, calls, Instagram flows.", 13f).apply { setPadding(0, ui.dp(8), 0, 0) })
         })
