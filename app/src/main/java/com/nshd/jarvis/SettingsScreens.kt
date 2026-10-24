@@ -273,6 +273,10 @@ class PersonaScreen : Screen() {
 
         col.addView(ui.section("Spoken voice"))
         val vc = ui.card(0)
+        vc.addView(ui.row("smile", "Live voice (Gemini)", LiveVoices.label(p.s("live_voice", "Aoede")) + " — used in Live conversations") {
+            act.chooser("Choose a Live voice", LiveVoices.all.map { (id, style) -> (id + " — " + style) to { p.put("live_voice", id); act.rebuildCurrent() } })
+        })
+        vc.addView(ui.divider())
         val voices = act.voice.installedVoices()
         val vNames = VoiceNames.assign(voices)
         val sel = voices.firstOrNull { it.name == p.s("tts_voice") }
@@ -319,9 +323,47 @@ class VoiceSetupScreen : Screen() {
         val st = ui.card(16)
         val granted = act.voice.micGranted()
         st.addView(ui.tv(if (granted) "MICROPHONE: ALLOWED" else "MICROPHONE: NOT ALLOWED", 12f, if (granted) t.ok else t.warn, true).apply { letterSpacing = 0.06f })
-        st.addView(ui.dim(if (act.voice.sessionActive) "A listening session is active right now." else "Zara listens only while a voice session is running — start one with the mic button.").apply { setPadding(0, ui.dp(6), 0, ui.dp(10)) })
+        st.addView(ui.dim(if (act.listening()) "A listening session is active right now." else "Zara listens only while a voice session is running — start one with the mic button.").apply { setPadding(0, ui.dp(6), 0, ui.dp(10)) })
         if (!granted) st.addView(ui.button("Allow microphone") { act.requestPerm(501, android.Manifest.permission.RECORD_AUDIO) })
         col.addView(st)
+
+        col.addView(ui.section("Voice engine"))
+        val eng = ui.card(16)
+        val cur = p.s("voice_engine", "auto")
+        val er = ui.hbox()
+        for ((id, lb) in listOf("auto" to "Auto", "live" to "Live", "classic" to "Classic")) er.addView(ui.chip(lb, cur == id) { p.put("voice_engine", id); act.rebuildCurrent() }, ui.lpm(r = 8))
+        eng.addView(er)
+        eng.addView(ui.dim("Live keeps the microphone open: Zara listens, thinks and talks at the same time, you can interrupt her, and she can operate your phone while you talk — even with the app closed. No start/stop beeps. Classic is tap, speak, wait for the reply (the phone's recogniser beeps each turn). Auto uses Live whenever a Gemini key is saved.").apply { setPadding(0, ui.dp(10), 0, 0) })
+        col.addView(eng)
+        val lv = ui.card(0)
+        val lm = p.s("live_model", LiveModels.DEFAULT).ifBlank { LiveModels.DEFAULT }
+        lv.addView(ui.row("key", "Live model", lm) { act.promptText("Live model", LiveModels.DEFAULT, lm) { v -> p.put("live_model", v.trim()); act.rebuildCurrent() } })
+        lv.addView(ui.divider())
+        lv.addView(ui.row("globe", "Find Live models for my key", "Asks Google which models support live voice and picks the newest") {
+            act.toast("Asking Google…")
+            Thread {
+                val (names, err) = GeminiProvider(act, p).listModels("bidiGenerateContent")
+                val pick = LiveModels.pick(names)
+                act.runOnUiThread {
+                    if (err != null) act.toast(err) else if (pick == null) act.toast("No Live-capable model found for this key.")
+                    else { p.put("live_model", pick); act.toast("Live model set to $pick"); act.rebuildCurrent() }
+                }
+            }.start()
+        })
+        lv.addView(ui.divider())
+        lv.addView(ui.row("smile", "Live voice", LiveVoices.label(p.s("live_voice", "Aoede"))) {
+            act.chooser("Choose a Live voice", LiveVoices.all.map { (id, style) -> (id + " — " + style) to { p.put("live_voice", id); act.rebuildCurrent() } })
+        })
+        lv.addView(ui.divider())
+        lv.addView(ui.switchRow("mic", "Always-listening mode", "Keeps Live on and stays silent until you say “Hey ${Persona.name(p)}”. Sends microphone audio to Google the whole time it is on — use only if you're comfortable with that.", p.b("live_gating", false)) { v ->
+            if (v) act.confirm("Turn on always-listening?", "While Live is on, everything the microphone hears is streamed to Google's Live API (the model is told to stay silent unless addressed). It uses data, battery and your quota. You can stop it from the notification any time.", "Turn on", { p.put("live_gating", true); act.rebuildCurrent() }) { act.rebuildCurrent() }
+            else p.put("live_gating", false)
+        })
+        lv.addView(ui.divider())
+        lv.addView(ui.switchRow(null, "Echo guard", "Pauses the microphone while Zara speaks. Turn on if she hears herself on the speaker; it disables talking over her. Off = you can interrupt.", p.b("echo_guard", false)) { p.put("echo_guard", it) })
+        lv.addView(ui.divider())
+        lv.addView(ui.labeledSlider("Stop Live after silence", { if (it == 0) "never" else "$it min" }, 0, 60, p.i("live_idle_min", 10)) { p.put("live_idle_min", it) })
+        col.addView(lv, ui.lpm(tp = 10))
 
         col.addView(ui.section("Test"))
         val tc = ui.card(16)

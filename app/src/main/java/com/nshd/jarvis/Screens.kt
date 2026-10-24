@@ -55,7 +55,7 @@ class HomeScreen : Screen(), BrainListener {
 
         val o = OrbView(act).apply {
             styleFrom(t)
-            style = act.prefs.s("orb_style", "particles")
+            style = act.prefs.s("orb_style", "to:auto")
             reduceMotion = act.prefs.b("reduce_motion", false); state = act.brain.orb
             isClickable = true; isFocusable = true
             contentDescription = "Zara orb. Tap to start or stop listening."
@@ -166,15 +166,16 @@ class HomeScreen : Screen(), BrainListener {
             OrbState.SPEAKING -> txt = "Speaking · tap to interrupt"
             OrbState.LISTENING -> txt = if (v.state == ZVoice.VState.HEARING) "Hearing you…" else "Listening…"
             OrbState.CONNECTED -> txt = "Connected"
-            OrbState.IDLE -> txt = if (v.sessionActive) "Ready · say something" else "ZARA OFF · TAP TO START"
+            OrbState.IDLE -> txt = if (act.listening()) "Ready · say something" else "ZARA OFF · TAP TO START"
         }
         pill?.text = txt.uppercase()
-        pill?.setTextColor(if (act.brain.orb == OrbState.ERROR) ui.t.danger else if (v.sessionActive) ui.t.accentText else ui.t.dim)
+        pill?.setTextColor(if (act.brain.orb == OrbState.ERROR) ui.t.danger else if (act.listening()) ui.t.accentText else ui.t.dim)
         val prov = Providers.primary(act, act.prefs)
         sub?.text = when {
             act.brain.orb == OrbState.ERROR -> act.brain.lastNote
-            act.partial.isNotBlank() && v.sessionActive && v.state != ZVoice.VState.IDLE -> "“" + act.partial + "”"
-            v.sessionActive -> "Microphone is ON for this session · tap the orb to stop"
+            act.partial.isNotBlank() && act.listening() && v.state != ZVoice.VState.IDLE -> "“" + act.partial + "”"
+            act.liveOn() -> "Live conversation is on — just talk, interrupt any time · tap the orb to stop"
+            act.listening() -> "Microphone is ON for this session · tap the orb to stop"
             !prov.configured() -> hint() + "\nNo AI key yet · Settings → AI Connection"
             else -> hint() + "\n" + prov.label + " · " + prov.modelName
         }

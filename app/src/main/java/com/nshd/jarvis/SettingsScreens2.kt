@@ -280,10 +280,36 @@ class AppControlScreen : Screen() {
         steps.addView(ui.dim("1. Tap the button above.\n2. Open “Installed apps” / “Downloaded apps”, then “${Brand.APP_NAME}”.\n3. Turn the switch on and confirm.\n\nIf Android says “Restricted setting” (common for apps installed from a downloaded APK on Android 13+): open Settings → Apps → ${Brand.APP_NAME}, tap ⋮ (top right) → “Allow restricted settings”, then try again. Android intentionally makes you do this yourself.", 13f).apply { setPadding(0, ui.dp(8), 0, 0) })
         col.addView(steps, ui.lpm(tp = 10))
 
+        col.addView(ui.section("Agent · operate any app"))
+        val ag = ui.card(0)
+        ag.addView(ui.switchRow("apps", "Agent mode", "Lets the AI read what's on screen and tap, swipe and type in any app, one verified step at a time — not just fixed commands. Needs Accessibility.", p.b("agent_mode", false)) { v ->
+            if (v) act.confirm("Turn on Agent mode?", "The AI will be able to read the visible text of your screen (never password fields) and operate apps for you. That screen text is sent to your AI provider. Payment, banking and password apps are protected, and Zara asks before sending, paying or deleting. You can stop any task from the notification.", "Turn on", { p.put("agent_mode", true); act.rebuildCurrent() }) { act.rebuildCurrent() }
+            else p.put("agent_mode", false)
+        })
+        col.addView(ag)
+        val au = ui.card(16)
+        val level = p.i("autonomy", 2)
+        au.addView(ui.tv("How much to ask first", 14f, t.text, true))
+        val ar = ui.hbox().apply { setPadding(0, ui.dp(10), 0, 0) }
+        for ((i, lb) in listOf("Everything", "Risky things", "Money & delete").withIndex()) ar.addView(ui.chip(lb, level == i + 1) { p.put("autonomy", i + 1); act.rebuildCurrent() }, ui.lpm(r = 8))
+        au.addView(HorizontalScrollView(act).apply { isHorizontalScrollBarEnabled = false; addView(ar) })
+        au.addView(ui.dim(when (level) {
+            1 -> "Asks before every action. Safest, slowest."
+            3 -> "Only asks before payments, deleting, resetting or signing out. Sending and posting go ahead on their own."
+            else -> "Asks before sending, posting, sharing, paying, deleting and similar. Everything else runs on its own."
+        }).apply { setPadding(0, ui.dp(10), 0, 0) })
+        col.addView(au, ui.lpm(tp = 10))
+        val pr = ui.card(0)
+        pr.addView(ui.row("shield", "Protected apps", ProtectedApps.list(p).size.toString() + " apps the agent will never read or operate") {
+            act.promptText("Protected app package names", "one per line or comma-separated", ProtectedApps.list(p).joinToString(", ")) { v -> p.put("protected_apps", v) ; act.rebuildCurrent() }
+        })
+        pr.addView(ui.divider())
+        pr.addView(ui.switchRow(null, "Instant commands", "Handle simple phrases like “open YouTube” without asking the AI. Off = the AI handles everything and can chain steps.", p.b("quick_commands", !Providers.primary(act, p).configured())) { p.put("quick_commands", it) })
+        col.addView(pr, ui.lpm(tp = 10))
+        col.addView(ui.dim("Each request gets a budget of ${AgentGuard.MAX_STEPS} steps. “Stop current task” below (or Stop in the notification) halts the agent immediately.").apply { setPadding(ui.dp(6), ui.dp(8), ui.dp(6), 0) })
+
         col.addView(ui.section("Safety & policy"))
         val pol = ui.card(0)
-        pol.addView(ui.switchRow(null, "Run low-risk actions without asking", "Opening apps, searches, settings pages, back/home, scrolling. Off by default.", p.b("auto_low", false)) { p.put("auto_low", it) })
-        pol.addView(ui.divider())
         pol.addView(ui.switchRow(null, "Allow navigation", "Back, home, recents, scrolling", p.b("allow_nav", true)) { p.put("allow_nav", it) })
         pol.addView(ui.divider())
         pol.addView(ui.switchRow(null, "Allow tapping on-screen controls", "Needs Accessibility", p.b("allow_tap", true)) { p.put("allow_tap", it) })
@@ -298,7 +324,7 @@ class AppControlScreen : Screen() {
         ex.addView(ui.tv("Honest limits", 13f, t.text, true).apply { setPadding(0, ui.dp(12), 0, ui.dp(4)) })
         ex.addView(ui.dim("Some apps hide controls from Accessibility or block automation, so a step may be reported as “could not verify” or handed back to you. Contact-name lookup, placing calls by itself, Instagram posting and screen-sharing vision are not built yet.", 13f))
         col.addView(ex)
-        col.addView(ui.button("Stop current task", false, true) { act.brain.stop(); act.toast("Stopped.") }, ui.lpm(tp = 12))
+        col.addView(ui.button("Stop current task", false, true) { AgentGuard.cancel(); act.brain.stop(); act.toast("Stopped.") }, ui.lpm(tp = 12))
         return sub(ui, "App Control & Hands-Free", "Voice-driven phone actions, with guardrails", col)
     }
     override fun onShow() { }
@@ -351,7 +377,7 @@ class ThemeScreen : Screen() {
         col.addView(ac)
 
         col.addView(ui.section("Orb style"))
-        val curStyle = p.s("orb_style", "particles")
+        val curStyle = p.s("orb_style", "to:auto")
         var orow = ui.hbox(false)
         for ((i, e) in OrbStyles.all.withIndex()) {
             val sel = e.first == curStyle
@@ -386,7 +412,7 @@ class PrivacyScreen : Screen() {
         val col = ui.vbox().apply { setPadding(ui.dp(16), 0, ui.dp(16), 0) }
         val live = ui.card(16)
         live.addView(ui.tv("RIGHT NOW", 11f, t.accentText, true).apply { letterSpacing = 0.1f })
-        live.addView(ui.tv(if (act.voice.sessionActive) "● Microphone is ON (voice session running)" else "● Microphone is off", 14f, if (act.voice.sessionActive) t.warn else t.ok, true).apply { setPadding(0, ui.dp(8), 0, 0) })
+        live.addView(ui.tv(if (act.listening()) "● Microphone is ON (voice session running)" else "● Microphone is off", 14f, if (act.listening()) t.warn else t.ok, true).apply { setPadding(0, ui.dp(8), 0, 0) })
         live.addView(ui.tv(if (ZaraAccessibilityService.instance != null) "● Accessibility service is enabled" else "● Accessibility service is off", 14f, t.text, true).apply { setPadding(0, ui.dp(6), 0, 0) })
         live.addView(ui.tv("● Screen sharing: not available in this version", 14f, t.dim, true).apply { setPadding(0, ui.dp(6), 0, 0) })
         col.addView(live)

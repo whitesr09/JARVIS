@@ -1,7 +1,7 @@
 package com.nshd.jarvis
 
 /** Pure Kotlin (no Android types) so it can be unit-tested on the JVM. */
-data class ActionRequest(val action: String, val target: String = "", val text: String = "")
+data class ActionRequest(val action: String, val target: String = "", val text: String = "", val extra: Map<String, String> = emptyMap())
 
 sealed class Local {
     data class Do(val req: ActionRequest) : Local()
@@ -164,5 +164,37 @@ object Wake {
             for (g in greetings) if (t.startsWith(g) && t.removePrefix(g) in names) return true   // "heyzara"
         }
         return false
+    }
+}
+
+data class HItem(val role: String, val text: String, val status: String = "", val meta: String = "")
+
+/**
+ * Builds the conversation sent to the AI. Every earlier user request must be followed by an assistant turn
+ * saying what happened, otherwise the model sees unanswered requests and tries to perform them again
+ * (the "after YouTube, everything opens YouTube" bug). Pure Kotlin so it can be unit-tested.
+ */
+object HistoryBuilder {
+    const val HANDLED = "(That request was already handled — do not repeat it.)"
+
+    fun build(items: List<HItem>, limit: Int): List<Pair<String, String>> {
+        val turns = ArrayList<Pair<String, String>>()
+        fun push(role: String, text: String) {
+            if (text.isBlank()) return
+            if (turns.isNotEmpty() && turns.last().first == role) {
+                if (role == "user") turns.add("assistant" to HANDLED)   // a user turn with no answer in between
+                else { turns[turns.size - 1] = role to (turns.last().second + "\n" + text); return }
+            }
+            turns.add(role to text)
+        }
+        for (it in items) when (it.role) {
+            "user" -> push("user", it.text)
+            "assistant" -> push("assistant", it.text)
+            "task" -> push("assistant", "[Device action already performed] ${it.meta}: ${it.status.lowercase().replace('_', ' ')}. ${it.text}".trim())
+        }
+        var out: List<Pair<String, String>> = turns
+        if (out.size > limit) out = out.takeLast(limit)
+        while (out.isNotEmpty() && out.first().first != "user") out = out.drop(1)
+        return out
     }
 }

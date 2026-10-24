@@ -38,6 +38,8 @@ class ActivityScreen : Screen() {
 
         col.addView(ui.section("Release notes"))
         col.addView(ui.card(16).apply {
+            addView(ui.tv("0.4.0 — Live, agent mode, new orbs", 14f, t.text, true))
+            addView(ui.dim("• Live conversation: mic stays open, speak while she thinks, interrupt any time, works with the app closed\n• Agent mode: the AI reads the screen and operates any app step by step, with approvals and protected apps\n• Fixed: after one YouTube command every later message re-ran it\n• Twelve orbs incl. the nine Thinking Orbs designs and a GPU fluid sphere\n• Permanent signing key (updates install over old builds)", 13f).apply { setPadding(0, ui.dp(8), 0, ui.dp(14)) })
             addView(ui.tv("0.3.0 — play anything, orb styles, Hey Zara", 14f, t.text, true))
             addView(ui.dim("• “Open Spotify and play …” now goes to Spotify (the AI no longer reuses YouTube)\n• YouTube: starts the top result with Accessibility; Spotify/YouTube Music/other players via play-from-search\n• New: timers, alarms, web search, maps, dial and SMS drafts\n• Five orb styles: Particles, Fluid, Aurora, Pulse, Waveform\n• Friendly, renameable names for every installed voice\n• Hands-free “Hey Zara” (experimental)", 13f).apply { setPadding(0, ui.dp(8), 0, ui.dp(14)) })
             addView(ui.tv("0.2.1 — layout fixes & polish", 14f, t.text, true))

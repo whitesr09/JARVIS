@@ -16,7 +16,24 @@ import java.net.URLEncoder
 enum class TaskStatus { COMPLETED, PARTIALLY_COMPLETED, FAILED, BLOCKED_BY_PERMISSION, NEEDS_USER_ACTION, COULD_NOT_VERIFY }
 enum class Risk { LOW, CONSEQUENTIAL }
 
-data class ActionResult(val status: TaskStatus, val message: String, val hint: String = "", val declined: Boolean = false)
+data class ActionResult(val status: TaskStatus, val message: String, val hint: String = "", val declined: Boolean = false, val data: String = "")
+
+/** Shared kill switch + step budget for agentic runs (one user request ≈ one budget). */
+object AgentGuard {
+    const val MAX_STEPS = 40
+    @Volatile var steps = 0
+    @Volatile var cancelled = false
+    fun reset() { steps = 0; cancelled = false }
+    fun cancel() { cancelled = true }
+}
+
+/** Apps the agent never reads or operates (payments, banking, password managers). Editable in Settings. */
+object ProtectedApps {
+    const val DEFAULT = "com.google.android.apps.nbu.paisa.user,com.phonepe.app,net.one97.paytm,in.org.npci.upiapp,com.sbi.lotusintouch," +
+        "com.snapwork.hdfc,com.csam.icici.bank.imobile,com.axis.mobile,com.msf.kbank.mobile,com.x8bit.bitwarden,com.agilebits.onepassword," +
+        "com.lastpass.lpandroid,com.kunzisoft.keepass.free,com.android.vending"
+    fun list(p: Prefs): Set<String> = p.s("protected_apps", DEFAULT).split(',', '\n', ' ').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+}
 class Preflight(val risk: Risk, val preview: String, val title: String, val blocked: ActionResult?)
 
 /**
@@ -25,13 +42,26 @@ class Preflight(val risk: Risk, val preview: String, val title: String, val bloc
  */
 class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
     private val main = Handler(Looper.getMainLooper())
-    private val needsA11y = setOf("go_back", "go_home", "recent_apps", "scroll_down", "scroll_up", "tap_text", "type_text")
+    private val needsA11y = setOf("go_back", "go_home", "recent_apps", "scroll_down", "scroll_up", "tap_text", "type_text",
+        "get_screen", "tap_node", "tap_point", "long_press_node", "swipe", "press_key")
+    private val needsAgentMode = setOf("get_screen", "tap_node", "tap_point", "long_press_node", "swipe")
+    private val touchesScreen = setOf("get_screen", "tap_node", "tap_point", "long_press_node", "swipe", "tap_text", "type_text", "scroll_down", "scroll_up")
+    private val readOnly = setOf("get_screen", "wait")
+    private val ALWAYS = Regex("(?i)\\b(pay|payment|purchase|buy|order|transfer|send money|delete|remove|uninstall|erase|reset|sign out|log out|logout|factory)\\b")
+
+    private fun launch(i: Intent) {
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // From the background only an accessibility service (or a visible app) may start other apps.
+        (if (MainActivity.visible != null) ctx else (ZaraAccessibilityService.instance ?: ctx)).startActivity(i)
+    }
 
     fun fromJson(o: JSONObject?): ActionRequest? {
         if (o == null) return null
         val a = o.optString("action")
         if (a !in Tools.ACTIONS) return null
-        return ActionRequest(a, o.optString("target").take(120), o.optString("text").take(600))
+        val extra = HashMap<String, String>()
+        for (k in listOf("id", "x", "y", "x2", "y2", "duration_ms", "key", "direction")) if (o.has(k)) extra[k] = o.opt(k).toString()
+        return ActionRequest(a, o.optString("target").take(120), o.optString("text").take(600), extra)
     }
 
     private fun blocked(s: TaskStatus, msg: String, hint: String = "") = ActionResult(s, msg, hint)
@@ -43,6 +73,13 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
         "play_media" -> "Play on " + mediaLabel(r.target)
         "search_youtube" -> "Search YouTube"
         "web_search" -> "Search the web"
+        "get_screen" -> "Read the screen"
+        "tap_node" -> "Tap element " + r.extra["id"]
+        "tap_point" -> "Tap at " + r.extra["x"] + "," + r.extra["y"]
+        "long_press_node" -> "Long-press element " + r.extra["id"]
+        "swipe" -> "Swipe"
+        "press_key" -> "Press " + (r.extra["key"] ?: r.target)
+        "wait" -> "Wait"
         "set_timer" -> "Set a timer"
         "set_alarm" -> "Set an alarm"
         "dial_number" -> "Open the dialer"
@@ -76,6 +113,21 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
             "search_youtube", "whatsapp_draft", "type_text", "web_search", "navigate_to" -> if (r.text.isBlank()) return block(blocked(TaskStatus.FAILED, "I need some text for that action."))
             "tap_text" -> if (r.target.isBlank()) return block(blocked(TaskStatus.FAILED, "What should I tap?"))
         }
+        if (AgentGuard.cancelled) return block(blocked(TaskStatus.FAILED, "Stopped — you cancelled the task."))
+        if (AgentGuard.steps >= AgentGuard.MAX_STEPS) return block(blocked(TaskStatus.FAILED, "I've reached the ${AgentGuard.MAX_STEPS}-step limit for one request, so I stopped.", "Ask me to continue if you want more."))
+        if (r.action in needsAgentMode && !prefs.b("agent_mode", false))
+            return block(blocked(TaskStatus.BLOCKED_BY_PERMISSION, "Agent mode is off, so I can't look at the screen or tap by position.", "Turn on Agent mode in Settings → App Control & Hands-Free."))
+        when (r.action) {
+            "tap_node", "long_press_node" -> if (r.extra["id"]?.toIntOrNull() == null) return block(blocked(TaskStatus.FAILED, "I need the element number from get_screen."))
+            "tap_point" -> if (r.extra["x"]?.toIntOrNull() == null || r.extra["y"]?.toIntOrNull() == null) return block(blocked(TaskStatus.FAILED, "I need x and y for that tap."))
+            "swipe" -> if (listOf("x", "y", "x2", "y2").any { r.extra[it]?.toIntOrNull() == null }) return block(blocked(TaskStatus.FAILED, "I need x, y, x2 and y2 for a swipe."))
+            "press_key" -> if ((r.extra["key"] ?: r.target).isBlank()) return block(blocked(TaskStatus.FAILED, "Which key: back, home, recents, notifications or quick_settings?"))
+        }
+        if (r.action in touchesScreen) {
+            val fg = ZaraAccessibilityService.instance?.foregroundPackage()
+            if (fg != null && fg in ProtectedApps.list(prefs))
+                return block(blocked(TaskStatus.BLOCKED_BY_PERMISSION, "That's a protected app ($fg) — I don't read or operate payment, banking or password apps.", "You can change the list in Settings → App Control & Hands-Free."))
+        }
         if (r.action in needsA11y && ZaraAccessibilityService.instance == null)
             return block(blocked(TaskStatus.BLOCKED_BY_PERMISSION, "Accessibility access isn't enabled.", "Enable Zara's accessibility service in Settings → App Control & Hands-Free."))
         val classKey = when (r.action) {
@@ -85,11 +137,24 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
         if (classKey.isNotEmpty() && !prefs.b(classKey, true))
             return block(blocked(TaskStatus.BLOCKED_BY_PERMISSION, "That kind of action is switched off in your settings.", "Change it in Settings → App Control & Hands-Free."))
 
-        val risk = when (r.action) {
-            "whatsapp_draft", "type_text", "sms_draft" -> Risk.CONSEQUENTIAL
-            "tap_text" -> if (Commands.RISKY.containsMatchIn(r.target)) Risk.CONSEQUENTIAL else Risk.LOW
+        val level = prefs.i("autonomy", 2).coerceIn(1, 3)   // 1 ask for everything · 2 ask for risky/public · 3 only for money/delete
+        val svc = ZaraAccessibilityService.instance
+        fun tapRisk(label: String) = when {
+            level <= 1 -> Risk.CONSEQUENTIAL
+            ALWAYS.containsMatchIn(label) -> Risk.CONSEQUENTIAL
+            level == 2 && Commands.RISKY.containsMatchIn(label) -> Risk.CONSEQUENTIAL
             else -> Risk.LOW
         }
+        val risk = when (r.action) {
+            "whatsapp_draft", "sms_draft" -> Risk.CONSEQUENTIAL
+            "get_screen", "wait", "press_key" -> Risk.LOW
+            "tap_text" -> tapRisk(r.target)
+            "tap_node", "long_press_node" -> tapRisk(svc?.nodeLabel(r.extra["id"]?.toIntOrNull() ?: -1).orEmpty())
+            "tap_point" -> tapRisk(svc?.labelAt(r.extra["x"]?.toIntOrNull() ?: 0, r.extra["y"]?.toIntOrNull() ?: 0).orEmpty())
+            else -> if (level <= 1) Risk.CONSEQUENTIAL else Risk.LOW
+        }
+        val typed = if (risk == Risk.CONSEQUENTIAL && r.action in setOf("tap_text", "tap_node", "tap_point")) svc?.focusedFieldText().orEmpty() else ""
+        val context = if (typed.isNotBlank()) "\n\nText currently typed in the focused field:\n“$typed”" else ""
         val preview = when (r.action) {
             "open_app" -> "Open the app “${r.target}”."
             "play_media" -> "Play " + (if (r.text.isBlank()) "something" else "“${r.text}”") + " on " + mediaLabel(r.target) + "." +
@@ -104,6 +169,13 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
             "open_settings" -> "Open the Android “${r.target.ifBlank { "general" }}” settings screen. You make any changes yourself."
             "whatsapp_draft" -> (if (r.target.isNotBlank()) "Recipient you mentioned: ${r.target} (you pick the chat yourself).\n" else "") +
                 "Prepare a WhatsApp message with this exact text. You choose the recipient and press Send yourself:\n\n“${r.text}”"
+            "get_screen" -> "Read the visible text of the current screen and share it with your AI."
+            "tap_node" -> "Tap " + (svc?.nodeLabel(r.extra["id"]?.toIntOrNull() ?: -1)?.let { if (it.isBlank()) "element ${r.extra["id"]}" else "“$it”" } ?: "an element") + " in the app that is currently open."
+            "long_press_node" -> "Long-press element ${r.extra["id"]} in the app that is currently open."
+            "tap_point" -> "Tap the screen at ${r.extra["x"]}, ${r.extra["y"]}" + (svc?.labelAt(r.extra["x"]?.toIntOrNull() ?: 0, r.extra["y"]?.toIntOrNull() ?: 0)?.takeIf { it.isNotBlank() }?.let { " (“$it”)" } ?: "") + "."
+            "swipe" -> "Swipe from ${r.extra["x"]},${r.extra["y"]} to ${r.extra["x2"]},${r.extra["y2"]}."
+            "press_key" -> "Press the ${r.extra["key"] ?: r.target} key."
+            "wait" -> "Wait a moment."
             "go_back" -> "Press Back on the app that is currently open."
             "go_home" -> "Go to the Android home screen."
             "recent_apps" -> "Open Android's recent apps."
@@ -112,7 +184,7 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
             "type_text" -> "Type this exact text into the focused field (password fields are never filled):\n\n“${r.text}”"
             else -> ttl
         }
-        return Preflight(risk, preview, ttl, null)
+        return Preflight(risk, preview + context, ttl, null)
     }
 
     fun execute(r: ActionRequest, done: (ActionResult) -> Unit) {
@@ -128,36 +200,36 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
             "open_app" -> openApp(r.target, done)
             "play_media" -> playMedia(r.target, r.text, done)
             "web_search" -> {
-                ctx.startActivity(Intent(Intent.ACTION_WEB_SEARCH).putExtra(SearchManager.QUERY, r.text).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                launch(Intent(Intent.ACTION_WEB_SEARCH).putExtra(SearchManager.QUERY, r.text).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 verifyForeground({ it != ctx.packageName }, "Opened a web search for “${r.text}”.", "Asked Android to search the web for “${r.text}”.", done)
             }
             "navigate_to" -> {
-                ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + URLEncoder.encode(r.text, "UTF-8"))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                launch(Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + URLEncoder.encode(r.text, "UTF-8"))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 verifyForeground({ it != ctx.packageName }, "Opened maps for “${r.text}”.", "Asked Android to open maps for “${r.text}”.", done)
             }
             "set_timer" -> {
                 val secs = r.text.toInt()
-                ctx.startActivity(Intent(AlarmClock.ACTION_SET_TIMER).putExtra(AlarmClock.EXTRA_LENGTH, secs).putExtra(AlarmClock.EXTRA_SKIP_UI, true).putExtra(AlarmClock.EXTRA_MESSAGE, "Zara").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                launch(Intent(AlarmClock.ACTION_SET_TIMER).putExtra(AlarmClock.EXTRA_LENGTH, secs).putExtra(AlarmClock.EXTRA_SKIP_UI, true).putExtra(AlarmClock.EXTRA_MESSAGE, "Zara").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "I asked the Clock app to start the timer. I can't read the Clock app, so please glance at it to confirm.", "Alarm/timer apps don't report back."))
             }
             "set_alarm" -> {
                 val (h, m) = r.text.split(":").map { it.toInt() }
-                ctx.startActivity(Intent(AlarmClock.ACTION_SET_ALARM).putExtra(AlarmClock.EXTRA_HOUR, h).putExtra(AlarmClock.EXTRA_MINUTES, m).putExtra(AlarmClock.EXTRA_SKIP_UI, true).putExtra(AlarmClock.EXTRA_MESSAGE, "Zara").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                launch(Intent(AlarmClock.ACTION_SET_ALARM).putExtra(AlarmClock.EXTRA_HOUR, h).putExtra(AlarmClock.EXTRA_MINUTES, m).putExtra(AlarmClock.EXTRA_SKIP_UI, true).putExtra(AlarmClock.EXTRA_MESSAGE, "Zara").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "I asked the Clock app to set an alarm for ${r.text}. Please check the Clock app to confirm.", "Alarm apps don't report back."))
             }
             "dial_number" -> {
-                ctx.startActivity(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(r.text))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                launch(Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(r.text))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 done(ActionResult(TaskStatus.NEEDS_USER_ACTION, "The dialer is open with ${r.text}. Press call yourself — I never place calls."))
             }
             "sms_draft" -> {
-                ctx.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + Uri.encode(r.target))).putExtra("sms_body", r.text).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                launch(Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + Uri.encode(r.target))).putExtra("sms_body", r.text).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 done(ActionResult(TaskStatus.NEEDS_USER_ACTION, "The message to ${r.target} is drafted in your messaging app. Review it and press Send yourself."))
             }
             "search_youtube" -> {
                 val uri = Uri.parse("https://www.youtube.com/results?search_query=" + URLEncoder.encode(r.text, "UTF-8"))
                 val yt = Intent(Intent.ACTION_VIEW, uri).setPackage("com.google.android.youtube").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                try { ctx.startActivity(yt) } catch (_: Exception) {
-                    ctx.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                try { launch(yt) } catch (_: Exception) {
+                    launch(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 }
                 done(ActionResult(TaskStatus.NEEDS_USER_ACTION, "YouTube search for “${r.text}” is open. I don't pick a video for you — choose one, or tell me which.", "Auto-picking a result isn't supported yet."))
             }
@@ -169,13 +241,13 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
                     "apps" -> Settings.ACTION_APPLICATION_SETTINGS; "location" -> Settings.ACTION_LOCATION_SOURCE_SETTINGS
                     else -> Settings.ACTION_SETTINGS
                 }
-                ctx.startActivity(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                launch(Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 verifyForeground({ it.contains("settings", true) }, "Opened Android settings.", "Settings launch was requested.", done)
             }
             "whatsapp_draft" -> {
                 val send = { pkg: String -> Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, r.text).setPackage(pkg).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-                val ok = try { ctx.startActivity(send("com.whatsapp")); true } catch (_: Exception) {
-                    try { ctx.startActivity(send("com.whatsapp.w4b")); true } catch (_: Exception) { false }
+                val ok = try { launch(send("com.whatsapp")); true } catch (_: Exception) {
+                    try { launch(send("com.whatsapp.w4b")); true } catch (_: Exception) { false }
                 }
                 if (ok) done(ActionResult(TaskStatus.NEEDS_USER_ACTION, "The draft is ready in WhatsApp. Choose the recipient and press Send yourself — I won't send it.", "Sending is always your final tap."))
                 else done(ActionResult(TaskStatus.FAILED, "WhatsApp doesn't appear to be installed."))
@@ -186,6 +258,34 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
                 val o = svc.global(r.action)
                 if (!o.dispatched) return done(ActionResult(TaskStatus.FAILED, "Android didn't accept that gesture."))
                 verifyChange(svc, t0, title(r) + " — done.", title(r) + " was sent.", done)
+            }
+            "get_screen" -> {
+                val svc = ZaraAccessibilityService.instance ?: return done(ActionResult(TaskStatus.BLOCKED_BY_PERMISSION, "Accessibility access isn't enabled."))
+                val (pkg, text) = svc.snapshot()
+                done(ActionResult(TaskStatus.COMPLETED, "Screen read.", data = "app: $pkg\n$text"))
+            }
+            "wait" -> main.postDelayed({ done(ActionResult(TaskStatus.COMPLETED, "Waited.")) }, (r.extra["duration_ms"]?.toLongOrNull() ?: 1000L).coerceIn(200L, 5000L))
+            "press_key" -> {
+                val svc = ZaraAccessibilityService.instance ?: return done(ActionResult(TaskStatus.BLOCKED_BY_PERMISSION, "Accessibility access isn't enabled."))
+                val t0 = SystemClock.uptimeMillis()
+                val o = svc.pressKey(r.extra["key"] ?: r.target)
+                if (!o.dispatched) done(ActionResult(TaskStatus.FAILED, o.note.ifBlank { "Android didn't accept that key." }))
+                else verifyChange(svc, t0, "Pressed ${r.extra["key"] ?: r.target}.", "Sent the ${r.extra["key"] ?: r.target} key.", done)
+            }
+            "tap_node", "tap_point", "long_press_node", "swipe" -> {
+                val svc = ZaraAccessibilityService.instance ?: return done(ActionResult(TaskStatus.BLOCKED_BY_PERMISSION, "Accessibility access isn't enabled."))
+                val t0 = SystemClock.uptimeMillis()
+                val cb: (A11yOutcome) -> Unit = { o ->
+                    if (!o.dispatched) done(ActionResult(TaskStatus.FAILED, o.note.ifBlank { "That didn't work on this screen." }, "Call get_screen again and retry, or ask the user."))
+                    else verifyChange(svc, t0, title(r) + " — the screen changed.", title(r) + " was sent.", done)
+                }
+                val e = r.extra
+                when (r.action) {
+                    "tap_node" -> svc.tapNode(e["id"]!!.toInt(), cb)
+                    "long_press_node" -> svc.longPressNode(e["id"]!!.toInt(), cb)
+                    "tap_point" -> svc.tapPoint(e["x"]!!.toInt(), e["y"]!!.toInt(), 60, cb)
+                    else -> svc.swipe(e["x"]!!.toInt(), e["y"]!!.toInt(), e["x2"]!!.toInt(), e["y2"]!!.toInt(), (e["duration_ms"]?.toLongOrNull() ?: 350L), cb)
+                }
             }
             "scroll_down", "scroll_up", "tap_text", "type_text" -> {
                 val svc = ZaraAccessibilityService.instance ?: return done(ActionResult(TaskStatus.BLOCKED_BY_PERMISSION, "Accessibility access isn't enabled."))
@@ -241,8 +341,8 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
         if (!installed(pkg)) return done(ActionResult(TaskStatus.FAILED, "$label isn't installed on this phone."))
         val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).setPackage(pkg).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*").putExtra(SearchManager.QUERY, query)
-        try { ctx.startActivity(i) } catch (_: Exception) {
-            ctx.packageManager.getLaunchIntentForPackage(pkg)?.let { ctx.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        try { launch(i) } catch (_: Exception) {
+            ctx.packageManager.getLaunchIntentForPackage(pkg)?.let { launch(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
             return done(ActionResult(TaskStatus.NEEDS_USER_ACTION, "$label opened, but it doesn't accept play requests from other apps. Search for " + (if (query.isBlank()) "something" else "“$query”") + " there yourself."))
         }
         val what = if (query.isBlank()) "music" else "“$query”"
@@ -261,7 +361,7 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
     private fun playYoutube(query: String, done: (ActionResult) -> Unit) {
         val uri = Uri.parse("https://www.youtube.com/results?search_query=" + URLEncoder.encode(query, "UTF-8"))
         val yt = Intent(Intent.ACTION_VIEW, uri).setPackage("com.google.android.youtube").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        try { ctx.startActivity(yt) } catch (_: Exception) { ctx.startActivity(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        try { launch(yt) } catch (_: Exception) { launch(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
         val svc = ZaraAccessibilityService.instance
             ?: return done(ActionResult(TaskStatus.NEEDS_USER_ACTION, "YouTube search for “$query” is open. Turn on Accessibility (Settings → App Control) and I'll start the top result for you; for now, tap a video.", "Starting a video needs Accessibility."))
         var tries = 0
@@ -288,7 +388,7 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
             "More than one app matches “$name”: " + hits.take(5).joinToString(", ") { it.first } + ". Which one do you mean?"))
         val (label, pkg) = hits[0]
         val i = pm.getLaunchIntentForPackage(pkg) ?: return done(ActionResult(TaskStatus.FAILED, "$label can't be launched."))
-        ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        launch(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         verifyForeground({ it == pkg }, "Opened $label and confirmed it's on screen.", "Asked Android to open $label.", done)
     }
 

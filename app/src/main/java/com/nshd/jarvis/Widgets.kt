@@ -107,15 +107,111 @@ enum class OrbState(val label: String) {
 }
 
 object OrbStyles {
+    /** id → label. "to:*" are the Thinking Orbs designs (MIT, ported with parity tests); "fluid" is the GPU fluid sphere. */
     val all = listOf(
-        "particles" to "Particles", "fluid" to "Fluid", "aurora" to "Aurora", "pulse" to "Pulse", "wave" to "Waveform")
-    fun label(id: String) = all.firstOrNull { it.first == id }?.second ?: "Particles"
+        "to:auto" to "Thinking Orbs · auto", "fluid" to "Fluid sphere", "particles" to "Particle globe",
+        "to:working" to "Orbits", "to:searching" to "Globe scan", "to:solving" to "Puzzle", "to:listening" to "Wave lattice",
+        "to:connecting" to "Network", "to:weaving" to "Braid", "to:composing" to "Ribbon", "to:breathing" to "Ring", "to:shaping" to "Morph")
+    fun label(id: String) = all.firstOrNull { it.first == id }?.second ?: "Thinking Orbs · auto"
+}
+
+/** Fluid sphere shader (AGSL, Android 13+). Mechanism after ShaderGradient's sphere: a noise-displaced, twisted sphere with a
+ *  three-colour gradient and glossy lighting — here evaluated per pixel. Falls back to a canvas blob when unavailable. */
+object FluidAgsl {
+    const val SRC = """
+uniform float2 iResolution;
+uniform float iTime;
+uniform float iLevel;
+uniform float iStrength;
+uniform float3 cA;
+uniform float3 cB;
+uniform float3 cC;
+
+float hash13(float3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.zyx + 31.32);
+  return fract((p.x + p.y) * p.z);
+}
+float noise3(float3 x) {
+  float3 i = floor(x);
+  float3 f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = mix(hash13(i), hash13(i + float3(1.0, 0.0, 0.0)), f.x);
+  float b = mix(hash13(i + float3(0.0, 1.0, 0.0)), hash13(i + float3(1.0, 1.0, 0.0)), f.x);
+  float c = mix(hash13(i + float3(0.0, 0.0, 1.0)), hash13(i + float3(1.0, 0.0, 1.0)), f.x);
+  float d = mix(hash13(i + float3(0.0, 1.0, 1.0)), hash13(i + float3(1.0, 1.0, 1.0)), f.x);
+  return mix(mix(a, b, f.y), mix(c, d, f.y), f.z);
+}
+float fbm(float3 p) {
+  float amp = 0.5;
+  float s = 0.0;
+  for (int k = 0; k < 3; k++) {
+    s += amp * noise3(p);
+    p = p * 2.03 + 17.0;
+    amp *= 0.5;
+  }
+  return s;
+}
+half4 main(float2 fragCoord) {
+  float halfMin = 0.5 * min(iResolution.x, iResolution.y);
+  float2 uv = (fragCoord - 0.5 * iResolution) / halfMin * 1.18;
+  float r = length(uv);
+  float ang = atan(uv.y, uv.x);
+  float t = iTime;
+  float sil = noise3(float3(cos(ang) * 0.95, sin(ang) * 0.95, t * 0.30));
+  float wob = iStrength * (sil - 0.5) * (0.9 + iLevel * 1.1);
+  float R = 0.80 + wob * 0.50;
+  float aa = 1.5 / halfMin * 1.18;
+  float mask = 1.0 - clamp((r - (R - aa)) / (2.0 * aa), 0.0, 1.0);
+  if (mask <= 0.0) { return half4(0.0); }
+  float2 q = uv / R;
+  float z = sqrt(max(0.0, 1.0 - dot(q, q)));
+  float3 n = float3(q, z);
+  float tw = sin(n.y * 2.3 + t * 0.55) * (0.55 + iLevel * 0.6);
+  float cs = cos(tw);
+  float sn = sin(tw);
+  float3 m = float3(n.x * cs + n.z * sn, n.y, -n.x * sn + n.z * cs);
+  float3 off = float3(0.0, t * 0.30, t * 0.18);
+  float d0 = fbm(m * 1.35 + off);
+  float e = 0.06;
+  float dx = fbm((m + float3(e, 0.0, 0.0)) * 1.35 + off) - d0;
+  float dy = fbm((m + float3(0.0, e, 0.0)) * 1.35 + off) - d0;
+  float3 nn = normalize(n - float3(dx, dy, 0.0) * (iStrength * 5.0));
+  float h = clamp(0.5 + 0.5 * (m.y * 0.9 + (d0 - 0.45) * 2.2), 0.0, 1.0);
+  h = h * h * (3.0 - 2.0 * h);
+  float distc = clamp(length(q) * 0.8 + (d0 - 0.45) * 1.2, 0.0, 1.0);
+  float3 inner = mix(cB, cA, h);
+  float3 base = mix(inner, cC, distc * distc * 0.75);
+  float3 L = normalize(float3(-0.45, 0.65, 0.62));
+  float diff = clamp(dot(nn, L), 0.0, 1.0);
+  float3 H = normalize(L + float3(0.0, 0.0, 1.0));
+  float spec = pow(clamp(dot(nn, H), 0.0, 1.0), 60.0);
+  float fres = pow(1.0 - clamp(nn.z, 0.0, 1.0), 2.2);
+  float3 col = base * (0.82 + 0.38 * diff) + spec * 0.5 + fres * 0.30 * (cA * 0.4 + 0.6);
+  col = clamp(col, 0.0, 1.0);
+  return half4(half3(col * mask), half(mask));
+}
+"""
+    /** Draws the shader into [c]. Returns false if this phone can't run it (caller then draws the fallback). */
+    fun draw(c: Canvas, holder: Array<Any?>, paint: Paint, w: Float, h: Float, t: Float, level: Float, strength: Float, a: Int, b: Int, cc: Int): Boolean {
+        if (android.os.Build.VERSION.SDK_INT < 33) return false
+        return try {
+            val sh = (holder[0] as? android.graphics.RuntimeShader) ?: android.graphics.RuntimeShader(SRC).also { holder[0] = it }
+            sh.setFloatUniform("iResolution", w, h); sh.setFloatUniform("iTime", t)
+            sh.setFloatUniform("iLevel", level); sh.setFloatUniform("iStrength", strength)
+            sh.setFloatUniform("cA", Color.red(a) / 255f, Color.green(a) / 255f, Color.blue(a) / 255f)
+            sh.setFloatUniform("cB", Color.red(b) / 255f, Color.green(b) / 255f, Color.blue(b) / 255f)
+            sh.setFloatUniform("cC", Color.red(cc) / 255f, Color.green(cc) / 255f, Color.blue(cc) / 255f)
+            paint.shader = sh; c.drawRect(0f, 0f, w, h, paint); paint.shader = null
+            true
+        } catch (t: Throwable) { holder[0] = null; false }
+    }
 }
 
 /**
- * The status orb, in five selectable styles (see [OrbStyles]). Every style reacts to the same states and to the
- * live voice level, draws only inside its own bounds, and stops animating when hidden, with reduce-motion, or in
- * Android battery saver (a still frame is drawn instead).
+ * The status orb. Styles: Thinking Orbs (nine designs; "auto" picks one from Zara's state), a GPU fluid sphere, and a
+ * particle globe. Every style reacts to state and live voice level, draws only inside its bounds, and animates only while
+ * visible (still frame with reduce-motion or battery saver).
  */
 class OrbView(ctx: Context) : View(ctx) {
     var accent = Color.WHITE
@@ -123,7 +219,9 @@ class OrbView(ctx: Context) : View(ctx) {
     var errorColor = Color.RED
     var discHi = Color.WHITE
     var discLo = Color.LTGRAY
-    var style = "particles"
+    private var paper = Color.WHITE
+    private var inkNear = Color.DKGRAY
+    var style = "to:auto"
         set(v) { field = v; cacheKey = 0L; invalidate() }
     var reduceMotion = false
         set(v) { field = v; restart() }
@@ -135,18 +233,18 @@ class OrbView(ctx: Context) : View(ctx) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
     private val blob = Path()
-    private val clip = Path()
     private var running = false
     private val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
-    private val tick = object : Runnable {
-        override fun run() { if (!running) return; invalidate(); postDelayed(this, 33L) }
-    }
+    private val tick = object : Runnable { override fun run() { if (!running) return; invalidate(); postDelayed(this, 33L) } }
     private var cacheKey = 0L
     private var glow: Shader? = null
     private var disc: Shader? = null
     private var ring: Shader? = null
+    private val shaderHolder = arrayOfNulls<Any>(1)
+    private var shaderFailed = false
+    private var tEff = 0.6          // Thinking Orbs clock: elapsed × the preset's speed (their contract)
+    private var lastMs = 0L
     private val violet = Color.parseColor("#8E55E8")
-    private val teal = Color.parseColor("#35C9C4")
 
     init {
         val n = if (pm.isPowerSaveMode) 420 else 820
@@ -163,12 +261,14 @@ class OrbView(ctx: Context) : View(ctx) {
         accent = t.accent; accent2 = t.accent2; errorColor = t.danger
         discHi = if (t.dark) Themes.mix(t.surface2, t.text, 0.14f) else Color.WHITE
         discLo = Themes.mix(if (t.dark) t.surface else t.bg2, violet, if (t.dark) 0.16f else 0.14f)
+        paper = t.bg
+        inkNear = if (t.dark) Themes.mix(t.accent, Color.WHITE, 0.45f) else Themes.mix(t.accent, t.text, 0.55f)
         cacheKey = 0L; invalidate()
     }
 
     private fun animated() = !reduceMotion && !pm.isPowerSaveMode
     private fun restart() { stop(); if (animated() && isShown) start() else invalidate() }
-    private fun start() { if (running || !animated()) return; running = true; post(tick) }
+    private fun start() { if (running || !animated()) return; running = true; lastMs = 0L; post(tick) }
     private fun stop() { running = false; removeCallbacks(tick) }
     override fun onAttachedToWindow() { super.onAttachedToWindow(); if (animated()) start() }
     override fun onDetachedFromWindow() { stop(); super.onDetachedFromWindow() }
@@ -179,35 +279,71 @@ class OrbView(ctx: Context) : View(ctx) {
         val cx = w / 2f; val cy = h / 2f
         val s = min(w, h)
         val bigR = s * 0.335f
-        val tm = if (animated()) SystemClock.uptimeMillis() / 1000f else 0.8f
+        val nowMs = SystemClock.uptimeMillis()
+        val tm = if (animated()) nowMs / 1000f else 0.8f
         val err = state == OrbState.ERROR
         val col = if (err) errorColor else accent
         val col2 = if (err) errorColor else accent2
         val ringCol = if (err) errorColor else Themes.mix(accent2, violet, 0.55f)
-
         val key = (w.toInt() * 31L + h.toInt()) * 31L + col * 17L + col2 + discHi * 7L + discLo * 13L
         if (key != cacheKey) {
             cacheKey = key
-            glow = RadialGradient(cx, cy, s * 0.49f, intArrayOf(Themes.alpha(col, 72), Themes.alpha(col, 0)), floatArrayOf(0.5f, 1f), Shader.TileMode.CLAMP)
+            glow = RadialGradient(cx, cy, s * 0.49f, intArrayOf(Themes.alpha(col, 64), Themes.alpha(col, 0)), floatArrayOf(0.5f, 1f), Shader.TileMode.CLAMP)
             disc = RadialGradient(cx - bigR * 0.25f, cy - bigR * 0.3f, bigR * 1.25f, intArrayOf(Themes.alpha(discHi, 240), Themes.alpha(discLo, 225)), null, Shader.TileMode.CLAMP)
             ring = SweepGradient(cx, cy, intArrayOf(Themes.alpha(ringCol, 0), Themes.alpha(ringCol, 230), Themes.alpha(ringCol, 0)), floatArrayOf(0f, 0.5f, 1f))
         }
         val speed = when (state) { OrbState.THINKING -> 1.6f; OrbState.LISTENING -> 0.6f; OrbState.SPEAKING -> 0.9f; OrbState.EXECUTING -> 1.2f; else -> 0.25f }
         val lv = if (state == OrbState.LISTENING || state == OrbState.SPEAKING) level else 0f
-        val breathe = 1f + 0.02f * sin(tm * 1.4f) + lv * 0.06f
-        val R = bigR * breathe
+        val R = bigR * (1f + 0.02f * sin(tm * 1.4f) + lv * 0.06f)
 
-        paint.shader = glow; c.drawCircle(cx, cy, s * 0.49f, paint); paint.shader = null
-        when (style) {
-            "fluid" -> drawFluid(c, cx, cy, R, tm * (0.6f + speed), col, col2, lv)
-            "aurora" -> drawAurora(c, cx, cy, R, tm * (0.5f + speed), col, col2, lv)
-            "pulse" -> drawPulse(c, cx, cy, R, tm, speed, col, col2, lv)
-            "wave" -> drawWave(c, cx, cy, R, tm, speed, col, col2, lv)
-            else -> drawParticles(c, cx, cy, R, s, tm, speed, col, col2, ringCol, lv)
+        when {
+            style.startsWith("to:") -> {
+                paint.shader = glow; c.drawCircle(cx, cy, s * 0.49f, paint); paint.shader = null
+                drawThinking(c, cx, cy, s, nowMs, col)
+            }
+            style == "fluid" -> {
+                val strength = when (state) { OrbState.THINKING -> 0.8f; OrbState.EXECUTING -> 0.7f; OrbState.SPEAKING -> 0.62f + lv * 0.2f; OrbState.LISTENING -> 0.56f + lv * 0.2f; else -> 0.5f }
+                val t = tm * (0.5f + speed)
+                val mixC = Themes.mix(accent2, violet, 0.6f)
+                var ok = false
+                if (!shaderFailed) { ok = FluidAgsl.draw(c, shaderHolder, paint, w, h, t, lv, strength, col, col2, mixC); if (!ok && android.os.Build.VERSION.SDK_INT >= 33) shaderFailed = true }
+                if (!ok) { paint.shader = glow; c.drawCircle(cx, cy, s * 0.49f, paint); paint.shader = null; drawFluidFallback(c, cx, cy, R, t, col, col2, lv) }
+            }
+            else -> { paint.shader = glow; c.drawCircle(cx, cy, s * 0.49f, paint); paint.shader = null; drawParticles(c, cx, cy, R, s, tm, speed, col, col2, ringCol, lv) }
         }
     }
 
-    // ---------------- particles (dotted globe + orbiting rings)
+    // ---------------- Thinking Orbs (port of the MIT library; geometry verified against its golden vectors)
+    private fun thinkingState(): String = if (style == "to:auto") when (state) {
+        OrbState.LISTENING -> "listening"; OrbState.THINKING -> "working"; OrbState.SPEAKING -> "composing"
+        OrbState.EXECUTING -> "searching"; OrbState.CONNECTED -> "connecting"; OrbState.ERROR -> "solving"; else -> "breathing"
+    } else style.removePrefix("to:")
+
+    private fun drawThinking(c: Canvas, cx: Float, cy: Float, s: Float, nowMs: Long, col: Int) {
+        val r = ThinkingOrbs.resolvePreset(thinkingState(), 64)
+        if (animated()) {
+            val dt = if (lastMs == 0L) 0.0 else (nowMs - lastMs) / 1000.0
+            lastMs = nowMs
+            tEff += dt * r.speed * (1.0 + level * 0.8)
+        } else tEff = 0.6                       // the library's still frame
+        val f = ThinkingOrbs.frameFor(r.mode, 64.0, tEff, r.opts)
+        val sc = (s * 0.92f) / 64f
+        val ox = cx - 32f * sc; val oy = cy - 32f * sc
+        val near = if (state == OrbState.ERROR) errorColor else inkNear
+        ringPaint.shader = null; ringPaint.strokeCap = Paint.Cap.ROUND
+        for (l in f.lines) {
+            ringPaint.color = Themes.alpha(Themes.mix(near, paper, l.white.toFloat().coerceIn(0f, 1f)), (l.a * 255).toInt().coerceIn(0, 255))
+            ringPaint.strokeWidth = (l.w * sc).toFloat()
+            c.drawLine(ox + l.x1.toFloat() * sc, oy + l.y1.toFloat() * sc, ox + l.x2.toFloat() * sc, oy + l.y2.toFloat() * sc, ringPaint)
+        }
+        for (d in f.dots) {
+            val nearness = (1.0 - d.white).toFloat().coerceIn(0f, 1f)
+            paint.color = Themes.alpha(Themes.mix(paper, near, nearness), (d.a * 255).toInt().coerceIn(0, 255))
+            c.drawCircle(ox + d.x.toFloat() * sc, oy + d.y.toFloat() * sc, (d.r * sc).toFloat(), paint)
+        }
+    }
+
+    // ---------------- particle globe
     private fun drawParticles(c: Canvas, cx: Float, cy: Float, R: Float, s: Float, tm: Float, speed: Float, col: Int, col2: Int, ringCol: Int, lv: Float) {
         paint.shader = disc; c.drawCircle(cx, cy, R * 0.99f, paint); paint.shader = null
         val ang = tm * speed
@@ -244,79 +380,27 @@ class OrbView(ctx: Context) : View(ctx) {
         ringPaint.alpha = 255; ringPaint.shader = null
     }
 
-    // ---------------- fluid (three morphing, overlapping blobs with a glassy highlight)
-    private fun drawFluid(c: Canvas, cx: Float, cy: Float, R: Float, tm: Float, col: Int, col2: Int, lv: Float) {
+    // ---------------- canvas fluid (fallback for phones without runtime shaders)
+    private fun drawFluidFallback(c: Canvas, cx: Float, cy: Float, R: Float, tm: Float, col: Int, col2: Int, lv: Float) {
         val stateAmp = when (state) { OrbState.THINKING -> 1.7f; OrbState.EXECUTING -> 1.4f; OrbState.SPEAKING, OrbState.LISTENING -> 1.1f; else -> 0.8f }
         for (k in 0 until 3) {
             blob.reset()
             val ph = k * 2.1f
-            val amp = R * (0.07f + 0.045f * k) * stateAmp * (1f + lv * 1.8f)
+            val amp = R * (0.05f + 0.03f * k) * stateAmp * (1f + lv * 1.4f)
             val n = 72
             for (i in 0..n) {
                 val a = i / n.toFloat() * 6.2831855f
-                val wob = sin(2 * a + tm * (0.9f + 0.3f * k) + ph) * 0.5f + sin(3 * a - tm * (1.3f - 0.2f * k) + ph * 1.7f) * 0.3f + sin(5 * a + tm * 1.9f) * 0.2f
+                val wob = sin(2 * a + tm * (0.9f + 0.3f * k) + ph) * 0.6f + sin(3 * a - tm * (1.3f - 0.2f * k) + ph * 1.7f) * 0.4f
                 val rr = R * (0.86f + 0.05f * k) + amp * wob
                 val x = cx + cos(a) * rr; val y = cy + sin(a) * rr
                 if (i == 0) blob.moveTo(x, y) else blob.lineTo(x, y)
             }
             blob.close()
-            paint.shader = LinearGradient(cx - R, cy - R, cx + R, cy + R,
-                Themes.alpha(Themes.mix(col2, col, k / 2f), 215 - 45 * k), Themes.alpha(Themes.mix(col, violet, 0.5f * (1 - k / 2f)), 150 - 25 * k), Shader.TileMode.CLAMP)
+            paint.shader = LinearGradient(cx - R, cy - R, cx + R, cy + R, Themes.alpha(Themes.mix(col2, col, k / 2f), 215 - 45 * k), Themes.alpha(Themes.mix(col, violet, 0.5f * (1 - k / 2f)), 150 - 25 * k), Shader.TileMode.CLAMP)
             c.drawPath(blob, paint)
         }
         paint.shader = RadialGradient(cx - R * 0.3f, cy - R * 0.38f, R * 0.85f, Themes.alpha(Color.WHITE, 150), Themes.alpha(Color.WHITE, 0), Shader.TileMode.CLAMP)
         c.drawCircle(cx, cy, R * 0.97f, paint); paint.shader = null
-    }
-
-    // ---------------- aurora (soft colour clouds drifting inside a glass sphere)
-    private fun drawAurora(c: Canvas, cx: Float, cy: Float, R: Float, tm: Float, col: Int, col2: Int, lv: Float) {
-        clip.reset(); clip.addCircle(cx, cy, R, Path.Direction.CW)
-        c.save(); c.clipPath(clip)
-        paint.shader = disc; c.drawCircle(cx, cy, R, paint)
-        val colors = intArrayOf(col, col2, violet, teal)
-        for (k in 0 until 4) {
-            val a = tm * (0.5f + 0.17f * k) + k * 1.7f
-            val bx = cx + cos(a) * R * (0.42f + 0.1f * sin(tm * 0.7f + k))
-            val by = cy + sin(a * 1.1f) * R * (0.42f + 0.1f * cos(tm * 0.6f + k))
-            val rad = R * (0.78f + 0.12f * lv)
-            paint.shader = RadialGradient(bx, by, rad, intArrayOf(Themes.alpha(colors[k], 175), Themes.alpha(colors[k], 0)), null, Shader.TileMode.CLAMP)
-            c.drawCircle(bx, by, rad, paint)
-        }
-        paint.shader = RadialGradient(cx - R * 0.3f, cy - R * 0.4f, R * 0.8f, Themes.alpha(Color.WHITE, 110), Themes.alpha(Color.WHITE, 0), Shader.TileMode.CLAMP)
-        c.drawCircle(cx, cy, R, paint); paint.shader = null
-        c.restore()
-        ringPaint.shader = null; ringPaint.color = Themes.alpha(Themes.mix(col2, violet, 0.5f), 150); ringPaint.strokeWidth = max(1.5f, R * 0.025f)
-        c.drawCircle(cx, cy, R, ringPaint)
-    }
-
-    // ---------------- pulse (expanding rings around a glowing core)
-    private fun drawPulse(c: Canvas, cx: Float, cy: Float, R: Float, tm: Float, speed: Float, col: Int, col2: Int, lv: Float) {
-        ringPaint.shader = null
-        for (k in 0 until 3) {
-            val f = ((tm * (0.28f + speed * 0.35f)) + k / 3f) % 1f
-            ringPaint.color = Themes.alpha(Themes.mix(col, col2, f), ((1f - f) * 190).toInt().coerceIn(0, 255))
-            ringPaint.strokeWidth = max(1.5f, R * 0.035f) * (1f - f * 0.6f)
-            c.drawCircle(cx, cy, R * (0.55f + 0.7f * f + lv * 0.08f), ringPaint)
-        }
-        val core = R * (0.52f + lv * 0.14f + 0.02f * sin(tm * 2f))
-        paint.shader = RadialGradient(cx - core * 0.25f, cy - core * 0.3f, core * 1.3f, intArrayOf(Themes.alpha(Color.WHITE, 235), Themes.alpha(col, 235), Themes.alpha(col2, 235)), floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP)
-        c.drawCircle(cx, cy, core, paint); paint.shader = null
-    }
-
-    // ---------------- waveform (a ring of bars that dance with the voice level)
-    private fun drawWave(c: Canvas, cx: Float, cy: Float, R: Float, tm: Float, speed: Float, col: Int, col2: Int, lv: Float) {
-        paint.shader = disc; c.drawCircle(cx, cy, R * 0.66f, paint); paint.shader = null
-        val n = 72
-        ringPaint.shader = null; ringPaint.strokeWidth = max(2f, R * 0.045f)
-        val live = when (state) { OrbState.IDLE, OrbState.CONNECTED -> 0.18f; OrbState.THINKING -> 0.55f; OrbState.EXECUTING -> 0.5f; else -> 0.35f + lv * 0.9f }
-        for (i in 0 until n) {
-            val a = i / n.toFloat() * 6.2831855f
-            val e = 0.5f + 0.5f * sin(tm * (2.2f + speed) + i * 0.55f) * sin(tm * 1.3f + i * 0.21f)
-            val len = R * (0.07f + 0.36f * live * e)
-            val r0 = R * 0.78f
-            ringPaint.color = Themes.alpha(Themes.mix(col, col2, i / n.toFloat()), 235)
-            c.drawLine(cx + cos(a) * r0, cy + sin(a) * r0, cx + cos(a) * (r0 + len), cy + sin(a) * (r0 + len), ringPaint)
-        }
     }
 
     override fun onMeasure(wSpec: Int, hSpec: Int) {

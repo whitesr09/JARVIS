@@ -12,8 +12,13 @@ A native Kotlin Android app: a voice-first AI companion and assistant with an an
 - **Updates & Activity** – verified task history (COMPLETED / PARTIALLY_COMPLETED / FAILED / BLOCKED_BY_PERMISSION / NEEDS_USER_ACTION / COULD_NOT_VERIFY), things waiting for you, version and release notes.
 - **Code Workspace** – edit, copy, share, save through Android's file picker, open files, hand a saved file to any editor ("Open with…"). Zara never runs code.
 
+## Live, agent and permanent signing
+- **Live conversation** (mic button / orb): the microphone stays open, Zara thinks and speaks while you talk, you can interrupt, and she can operate your phone — even with the app closed. See *Settings → Voice Setup*.
+- **Agent mode** (*Settings → App Control*): the AI looks at the screen and taps, swipes and types like a person, one verified step at a time, with approvals, protected apps and a 40-step budget.
+- **Permanent signing:** see `docs/SIGNING.md` so new APKs install over old ones.
+
 ## Orb styles & voices
-Theme Studio offers five orb styles (Particles, Fluid, Aurora, Pulse, Waveform). Voice names (Aria, Nova, Kai…) are friendly labels for the voices installed on your phone, and you can rename any of them.
+Theme Studio offers twelve orb styles: the nine **Thinking Orbs** designs (MIT, ported with golden-vector parity; "auto" follows Zara's state), a GPU **fluid sphere**, and the particle globe. Voice names (Aria, Nova, Kai…) are friendly labels for the voices installed on your phone, and you can rename any of them.
 
 ## Safety model (device actions)
 The AI can only request one allow-listed action (`open_app`, `play_media`, `search_youtube`, `web_search`, `set_timer`, `set_alarm`, `dial_number`, `navigate_to`, `sms_draft`, `open_settings`, `whatsapp_draft`, `go_back`, `go_home`, `recent_apps`, `scroll_down/up`, `tap_text`, `type_text`). Each request is validated, policy-checked, shown to you for confirmation when it is public or consequential (sending, typing, risky taps), executed, and then **verified** — success is only reported when it was observed. It is off until you enable it, never auto-taps permission/install dialogs, never fills password fields, and WhatsApp messages are drafts that you send yourself.

@@ -11,8 +11,9 @@ import java.net.URL
 import java.net.UnknownHostException
 import java.util.concurrent.atomic.AtomicBoolean
 
-data class Msg(val role: String, val text: String) // role: "user" | "assistant"
-data class ToolCall(val name: String, val args: JSONObject)
+/** role: user | assistant | tool. Assistant turns may carry the tool calls they made; tool turns carry the results (name → JSON). */
+data class Msg(val role: String, val text: String, val calls: List<ToolCall> = emptyList(), val responses: List<Pair<String, String>> = emptyList())
+data class ToolCall(val name: String, val args: JSONObject, val raw: String = "")
 data class AiResult(val ok: Boolean, val error: String? = null, val calls: List<ToolCall> = emptyList(), val cancelled: Boolean = false)
 data class TestResult(val ok: Boolean, val message: String)
 
@@ -51,16 +52,23 @@ object Http {
 object Tools {
     val ACTIONS = listOf("open_app", "play_media", "search_youtube", "open_settings", "whatsapp_draft", "go_back", "go_home",
         "recent_apps", "scroll_down", "scroll_up", "tap_text", "type_text", "web_search", "set_timer", "set_alarm",
-        "dial_number", "navigate_to", "sms_draft")
+        "dial_number", "navigate_to", "sms_draft", "get_screen", "tap_node", "tap_point", "long_press_node", "swipe", "press_key", "wait")
 
     fun geminiDeclaration(): JSONObject = JSONObject()
         .put("name", "device_action")
         .put("description", "Ask the Zara app to perform ONE allow-listed action on the user's phone. The app validates it and may ask the user to confirm. Only call this when the user clearly asked for a phone action.")
         .put("parameters", JSONObject().put("type", "OBJECT").put("properties", JSONObject()
             .put("action", JSONObject().put("type", "STRING").put("enum", JSONArray(ACTIONS))
-                .put("description", "open_app(target=app name); play_media(target=the app the user named in their LATEST message, e.g. spotify|youtube|ytmusic|<other app>, text=song/video/artist, empty for 'anything'); search_youtube(text=query, search only); open_settings(target=wifi|bluetooth|display|sound|accessibility|battery|apps|location|general); whatsapp_draft(text); sms_draft(target=phone number, text); dial_number(text=number); web_search(text); navigate_to(text=place); set_timer(text=seconds); set_alarm(text=HH:MM 24h); go_back; go_home; recent_apps; scroll_down; scroll_up; tap_text(target=visible label); type_text(text)"))
+                .put("description", "open_app(target=app name); play_media(target=the app the user named in their LATEST message, e.g. spotify|youtube|ytmusic|<other app>, text=song/video/artist, empty for 'anything'); search_youtube(text=query, search only); open_settings(target=wifi|bluetooth|display|sound|accessibility|battery|apps|location|general); whatsapp_draft(text); sms_draft(target=phone number, text); dial_number(text=number); web_search(text); navigate_to(text=place); set_timer(text=seconds); set_alarm(text=HH:MM 24h); go_back; go_home; recent_apps; scroll_down; scroll_up; tap_text(target=visible label); type_text(text, goes into the focused field). To operate any app like a person: get_screen to see numbered elements, then tap_node(id), tap_point(x,y), swipe(x,y,x2,y2), type_text, press_key(key), wait(duration_ms), then get_screen again to verify the result before continuing."))
             .put("target", JSONObject().put("type", "STRING").put("description", "App name, settings page, or visible on-screen label"))
-            .put("text", JSONObject().put("type", "STRING").put("description", "Search query or text to enter/draft")))
+            .put("text", JSONObject().put("type", "STRING").put("description", "Search query or text to enter/draft"))
+            .put("id", JSONObject().put("type", "INTEGER").put("description", "Element number from get_screen (for tap_node / long_press_node)"))
+            .put("x", JSONObject().put("type", "INTEGER").put("description", "Screen x in pixels (tap_point, swipe start)"))
+            .put("y", JSONObject().put("type", "INTEGER").put("description", "Screen y in pixels (tap_point, swipe start)"))
+            .put("x2", JSONObject().put("type", "INTEGER").put("description", "Swipe end x"))
+            .put("y2", JSONObject().put("type", "INTEGER").put("description", "Swipe end y"))
+            .put("duration_ms", JSONObject().put("type", "INTEGER").put("description", "Gesture or wait duration in milliseconds"))
+            .put("key", JSONObject().put("type", "STRING").put("description", "back | home | recents | notifications | quick_settings (press_key)")))
             .put("required", JSONArray().put("action")))
 }
 
@@ -90,8 +98,18 @@ class GeminiProvider(private val ctx: Context, private val prefs: Prefs) : AiPro
     private fun body(system: String, history: List<Msg>, withTools: Boolean, maxTokens: Int): JSONObject {
         val contents = JSONArray()
         for (m in history.dropWhile { it.role != "user" }) {
-            contents.put(JSONObject().put("role", if (m.role == "assistant") "model" else "user")
-                .put("parts", JSONArray().put(JSONObject().put("text", m.text))))
+            val parts = JSONArray()
+            when {
+                m.role == "tool" -> for ((name, json) in m.responses)
+                    parts.put(JSONObject().put("functionResponse", JSONObject().put("name", name).put("response", try { JSONObject(json) } catch (_: Exception) { JSONObject().put("result", json) })))
+                m.role == "assistant" && m.calls.isNotEmpty() -> {
+                    if (m.text.isNotBlank()) parts.put(JSONObject().put("text", m.text))
+                    // echo the model's own function-call parts verbatim (they may carry a thoughtSignature)
+                    for (c in m.calls) parts.put(if (c.raw.isNotEmpty()) JSONObject(c.raw) else JSONObject().put("functionCall", JSONObject().put("name", c.name).put("args", c.args)))
+                }
+                else -> parts.put(JSONObject().put("text", m.text))
+            }
+            contents.put(JSONObject().put("role", if (m.role == "assistant") "model" else "user").put("parts", parts))
         }
         val b = JSONObject()
             .put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
@@ -131,7 +149,7 @@ class GeminiProvider(private val ctx: Context, private val prefs: Prefs) : AiPro
                         for (k in 0 until parts.length()) {
                             val part = parts.getJSONObject(k)
                             if (part.has("text")) { val tx = part.getString("text"); if (tx.isNotEmpty()) { emitted = true; onDelta(tx) } }
-                            part.optJSONObject("functionCall")?.let { calls.add(ToolCall(it.optString("name"), it.optJSONObject("args") ?: JSONObject())) }
+                            part.optJSONObject("functionCall")?.let { calls.add(ToolCall(it.optString("name"), it.optJSONObject("args") ?: JSONObject(), part.toString())) }
                         }
                     }
                 }
@@ -164,7 +182,7 @@ class GeminiProvider(private val ctx: Context, private val prefs: Prefs) : AiPro
     }
 
     /** Ask the API which models support generateContent, so the list never goes stale. */
-    fun listModels(): Pair<List<String>, String?> {
+    fun listModels(method: String = "generateContent"): Pair<List<String>, String?> {
         val key = key()
         if (key.isBlank()) return emptyList<String>() to "Save an API key first."
         var conn: HttpURLConnection? = null
@@ -177,7 +195,7 @@ class GeminiProvider(private val ctx: Context, private val prefs: Prefs) : AiPro
             for (i in 0 until arr.length()) {
                 val m = arr.getJSONObject(i)
                 val methods = m.optJSONArray("supportedGenerationMethods")?.toString().orEmpty()
-                if (methods.contains("generateContent")) out.add(m.optString("name").removePrefix("models/"))
+                if (methods.contains(method)) out.add(m.optString("name").removePrefix("models/"))
             }
             out.sort(); out to null
         } catch (e: Exception) { emptyList<String>() to Http.networkError(e) }
@@ -204,7 +222,7 @@ class OpenAiProvider(private val ctx: Context, private val prefs: Prefs) : AiPro
 
     private fun body(system: String, history: List<Msg>, stream: Boolean, maxTokens: Int): JSONObject {
         val msgs = JSONArray().put(JSONObject().put("role", "system").put("content", system))
-        for (m in history) msgs.put(JSONObject().put("role", m.role).put("content", m.text))
+        for (m in history) if (m.role == "user" || m.role == "assistant") msgs.put(JSONObject().put("role", m.role).put("content", m.text))
         return JSONObject().put("model", modelName).put("messages", msgs).put("stream", stream)
             .put("temperature", 0.7).put("max_tokens", maxTokens)
     }

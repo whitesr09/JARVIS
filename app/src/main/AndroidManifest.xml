@@ -9,6 +9,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <!-- Lets "set a timer / alarm" ask the Clock app directly. -->
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <!-- Keeps the live conversation running with the screen off. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Kept from the starter: lets "open <any installed app>" find apps by name. -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesPermission" />
 
@@ -52,6 +54,8 @@
         </service>
 
         <service android:name=".OverlayService" android:exported="false" />
+        <service android:name=".LiveService" android:exported="false" android:foregroundServiceType="microphone" />
+        <receiver android:name=".ConfirmReceiver" android:exported="false" />
         <service android:name=".WakeService" android:exported="false" android:foregroundServiceType="microphone" />
     </application>
 </manifest>

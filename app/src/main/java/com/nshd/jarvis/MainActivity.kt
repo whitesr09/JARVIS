@@ -48,6 +48,10 @@ class MainActivity : Activity(), BrainListener {
     private var pendingConfirm: (() -> Unit)? = null
     private var pendingVoice = false
     private var pendingWake = false
+    private var pendingLive = false
+    private val liveWatcher = object : LiveListener {
+        override fun onLiveState(s: LiveState, note: String) { if ((s == LiveState.ERROR || s == LiveState.OFF) && note.isNotBlank()) toast(note); updateMic() }
+    }
     private val navItems = ArrayList<Pair<LinearLayout, IconView>>()
     private var micFab: FrameLayout? = null
 
@@ -61,6 +65,7 @@ class MainActivity : Activity(), BrainListener {
         brain = Brain(this)
         wireVoice()
         brain.listeners.add(this)
+        LiveBus.listeners.add(liveWatcher)
         applyTheme(initial = true)
         if (!prefs.b("onboarded", false)) go(OnboardingScreen())
         if (prefs.b("overlay_on", false) && OverlayService.canDraw(this)) OverlayService.start(this)
@@ -165,7 +170,7 @@ class MainActivity : Activity(), BrainListener {
 
     private fun updateMic() {
         val fab = micFab ?: return
-        val on = voice.sessionActive
+        val on = listening()
         fab.background = ui.ripple(ui.shape(if (on) theme.accent else theme.surface2, 32f, if (on) theme.accent else theme.stroke, 1.5f), 32f)
         fab.removeAllViews()
         val fg = if (on) theme.onAccent else theme.text
@@ -242,7 +247,21 @@ class MainActivity : Activity(), BrainListener {
     override fun onBackPressed() = back()
 
     // ------------------------------------------------------------ voice
+    fun liveOn() = LiveBus.state != LiveState.OFF
+    /** True while any microphone session (Live or classic) is running. */
+    fun listening() = voice.sessionActive || liveOn()
+    /** "auto" = Live whenever a Gemini key exists; the user can force Live or classic in Voice Setup. */
+    fun useLive() = prefs.s("voice_engine", "auto").let { it == "live" || (it == "auto" && SecureStore.has(this, "gemini_key")) }
+
+    fun startLive() {
+        if (!voice.micGranted()) { pendingLive = true; requestPerm(501, Manifest.permission.RECORD_AUDIO); return }
+        WakeService.pause()
+        LiveService.start(this)
+    }
+
     fun toggleVoice() {
+        if (liveOn()) { LiveService.stop(this); return }
+        if (useLive()) { startLive(); return }
         if (voice.state == ZVoice.VState.SPEAKING) { voice.interrupt(); return }
         if (voice.sessionActive) { voice.stopSession(""); return }
         beginVoice()
@@ -332,9 +351,10 @@ class MainActivity : Activity(), BrainListener {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         val ok = grantResults.firstOrNull() == android.content.pm.PackageManager.PERMISSION_GRANTED
         if (requestCode == 501) {
-            if (ok && pendingWake) { pendingWake = false; activateWake() }
+            if (ok && pendingLive) { pendingLive = false; startLive() }
+            else if (ok && pendingWake) { pendingWake = false; activateWake() }
             else if (ok && pendingVoice) { pendingVoice = false; toggleVoice() }
-            else if (!ok) { pendingVoice = false; pendingWake = false; toast("Microphone permission is needed for voice. Text chat still works.") }
+            else if (!ok) { pendingVoice = false; pendingWake = false; pendingLive = false; toast("Microphone permission is needed for voice. Text chat still works.") }
         }
         screens.lastOrNull()?.onPermission(requestCode, ok)
     }
@@ -368,6 +388,7 @@ class MainActivity : Activity(), BrainListener {
 
     override fun onDestroy() {
         brain.listeners.remove(this)
+        LiveBus.listeners.remove(liveWatcher)
         brain.shutdown()
         voice.shutdown()
         try { db.close() } catch (_: Exception) {}

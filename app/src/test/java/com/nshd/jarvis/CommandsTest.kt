@@ -94,4 +94,16 @@ class CommandsTest {
         assertTrue(Commands.RISKY.containsMatchIn("Add a comment"))
         assertFalse(Commands.RISKY.containsMatchIn("Search"))
     }
+
+    @Test fun everyUserRequestGetsAnAnswerInHistory() {
+        // Regression: after "open YouTube and play something" the next message used to re-trigger it.
+        val task = HItem("task", "YouTube search is open.", "NEEDS_USER_ACTION", "Play on YouTube")
+        val h = HistoryBuilder.build(listOf(HItem("user", "open youtube and play something"), task, HItem("user", "what's the weather")), 16)
+        assertEquals(listOf("user", "assistant", "user"), h.map { it.first })
+        assertTrue(h[1].second.contains("already performed"))
+        val two = HistoryBuilder.build(listOf(HItem("user", "a"), HItem("user", "b")), 16)
+        assertEquals(listOf("user", "assistant", "user"), two.map { it.first })
+        assertEquals(HistoryBuilder.HANDLED, two[1].second)
+        assertEquals("user", HistoryBuilder.build(listOf(HItem("user", "a"), HItem("assistant", "x"), HItem("user", "b"), HItem("assistant", "y"), HItem("user", "c")), 2).first().first)
+    }
 }

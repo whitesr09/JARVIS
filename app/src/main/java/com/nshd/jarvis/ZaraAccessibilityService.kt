@@ -1,6 +1,8 @@
 package com.nshd.jarvis
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.graphics.Path
 import android.graphics.Rect
 import android.os.Bundle
 import android.os.SystemClock
@@ -107,6 +109,107 @@ class ZaraAccessibilityService : AccessibilityService() {
         val found = ArrayList<Pair<Int, AccessibilityNodeInfo>>()
         collect(root, 0, re, null, found)
         return found.isNotEmpty()
+    }
+
+    // ------------------------------------------------------------------ agent: eyes
+    private val snapNodes = ArrayList<AccessibilityNodeInfo>()
+
+    /** A compact, numbered description of what is on screen. Password fields are never read. */
+    fun snapshot(maxNodes: Int = 90): Pair<String, String> {
+        val root = rootInActiveWindow ?: return "" to "(no window content available)"
+        val pkg = root.packageName?.toString() ?: ""
+        snapNodes.clear()
+        val sb = StringBuilder()
+        fun walk(n: AccessibilityNodeInfo?, depth: Int) {
+            if (n == null || depth > 40 || snapNodes.size >= maxNodes || sb.length > 7000) return
+            val cls = (n.className?.toString() ?: "").substringAfterLast('.')
+            val txt = n.text?.toString().orEmpty().replace('\n', ' ').take(80)
+            val desc = n.contentDescription?.toString().orEmpty().replace('\n', ' ').take(80)
+            val interesting = n.isVisibleToUser && (txt.isNotEmpty() || desc.isNotEmpty() || n.isClickable || n.isEditable || n.isScrollable)
+            if (interesting) {
+                val r = Rect(); n.getBoundsInScreen(r)
+                val id = snapNodes.size; snapNodes.add(n)
+                val flags = ArrayList<String>()
+                if (n.isClickable) flags.add("tap"); if (n.isEditable) flags.add("edit"); if (n.isScrollable) flags.add("scroll")
+                if (n.isChecked) flags.add("checked"); if (n.isFocused) flags.add("focused")
+                val shown = if (n.isPassword) "[password field - hidden]" else listOf(txt, desc).filter { it.isNotEmpty() }.distinct().joinToString(" / ")
+                sb.append('[').append(id).append("] ").append(cls).append(' ').append('"').append(shown).append('"')
+                if (flags.isNotEmpty()) sb.append(" (").append(flags.joinToString(",")).append(')')
+                sb.append(" @").append(r.centerX()).append(',').append(r.centerY()).append('\n')
+            }
+            for (i in 0 until n.childCount) walk(n.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return pkg to sb.toString().ifBlank { "(screen has no readable elements)" }
+    }
+
+    fun nodeLabel(id: Int): String = snapNodes.getOrNull(id)?.let { label(it) } ?: ""
+
+    fun labelAt(x: Int, y: Int): String {
+        val root = rootInActiveWindow ?: return ""
+        var best: AccessibilityNodeInfo? = null; var bestArea = Long.MAX_VALUE
+        fun walk(n: AccessibilityNodeInfo?, depth: Int) {
+            if (n == null || depth > 40) return
+            val r = Rect(); n.getBoundsInScreen(r)
+            if (r.contains(x, y) && n.isVisibleToUser && (n.isClickable || label(n).isNotEmpty())) {
+                val a = r.width().toLong() * r.height(); if (a in 1 until bestArea) { bestArea = a; best = n }
+            }
+            for (i in 0 until n.childCount) walk(n.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return best?.let { label(it) } ?: ""
+    }
+
+    fun focusedFieldText(): String {
+        val f = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return ""
+        return if (f.isPassword) "" else f.text?.toString().orEmpty().take(200)
+    }
+
+    // ------------------------------------------------------------------ agent: hands
+    fun tapNode(id: Int, cb: (A11yOutcome) -> Unit) {
+        val n = snapNodes.getOrNull(id) ?: return cb(A11yOutcome(false, "Element [$id] is unknown or stale. Call get_screen again."))
+        n.refresh()
+        var c: AccessibilityNodeInfo? = n; var hops = 0
+        while (c != null && !c.isClickable && hops++ < 5) c = c.parent
+        if (c != null && c.isClickable && c.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return cb(A11yOutcome(true, ""))
+        val r = Rect(); n.getBoundsInScreen(r)
+        tapPoint(r.centerX(), r.centerY(), 60, cb)
+    }
+
+    fun longPressNode(id: Int, cb: (A11yOutcome) -> Unit) {
+        val n = snapNodes.getOrNull(id) ?: return cb(A11yOutcome(false, "Element [$id] is unknown or stale. Call get_screen again."))
+        n.refresh()
+        if (n.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) return cb(A11yOutcome(true, ""))
+        val r = Rect(); n.getBoundsInScreen(r)
+        tapPoint(r.centerX(), r.centerY(), 700, cb)
+    }
+
+    fun tapPoint(x: Int, y: Int, durationMs: Long, cb: (A11yOutcome) -> Unit) {
+        val p = Path(); p.moveTo(x.toFloat(), y.toFloat()); p.lineTo(x.toFloat() + 0.1f, y.toFloat())
+        gesture(p, durationMs.coerceIn(30, 1500), cb)
+    }
+
+    fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Long, cb: (A11yOutcome) -> Unit) {
+        val p = Path(); p.moveTo(x1.toFloat(), y1.toFloat()); p.lineTo(x2.toFloat(), y2.toFloat())
+        gesture(p, durationMs.coerceIn(80, 2500), cb)
+    }
+
+    private fun gesture(path: Path, dur: Long, cb: (A11yOutcome) -> Unit) {
+        val g = GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, dur)).build()
+        val ok = dispatchGesture(g, object : GestureResultCallback() {
+            override fun onCompleted(d: GestureDescription?) { cb(A11yOutcome(true, "")) }
+            override fun onCancelled(d: GestureDescription?) { cb(A11yOutcome(false, "The gesture was cancelled by Android.")) }
+        }, null)
+        if (!ok) cb(A11yOutcome(false, "Android refused the gesture."))
+    }
+
+    fun pressKey(key: String): A11yOutcome {
+        val code = when (key.lowercase()) {
+            "back" -> GLOBAL_ACTION_BACK; "home" -> GLOBAL_ACTION_HOME; "recents", "recent_apps" -> GLOBAL_ACTION_RECENTS
+            "notifications" -> GLOBAL_ACTION_NOTIFICATIONS; "quick_settings" -> GLOBAL_ACTION_QUICK_SETTINGS
+            else -> return A11yOutcome(false, "Unsupported key “$key”. Use back, home, recents, notifications or quick_settings.")
+        }
+        return A11yOutcome(performGlobalAction(code), "")
     }
 
     fun typeText(text: String): A11yOutcome {

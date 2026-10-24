@@ -2,6 +2,8 @@
 
 **Verification key.** *Compiled* = Kotlin sources compile with kotlinc 2.0.20 against the android-34 `android.jar` (not a full Gradle/AGP build). *JVM-tested* = executed on a JVM test harness. *CI* = GitHub Actions build — **not yet run for this change**. *Device* = tested on a real phone — **nothing in this table has been tested on a device yet**.
 
+**v0.4.0 note.** New in v0.4.0 and verified as follows: Thinking Orbs port (**golden parity: 72 frames / 11,288 dots, max error 5e-7**), WebSocket client (**12 checks against a real server**), Live protocol (**17 checks against a spec-following mock server**), history fix (**regression test**). Audio capture/playback, the Live service, agent actions and the fluid shader are compiled only — **nothing has run on a phone yet**.
+
 **v0.3.0 note.** Features added in v0.3.0 (media playback, orb styles, voice names, wake phrase) are compiled but not device-tested.
 
 **v0.2.1 note.** The first real-device screenshots exposed a layout bug (rows collapsed into tall blank cards because of a match-parent chevron). It is fixed and every call site was audited, but the fix itself is still unverified on a device.
@@ -26,7 +28,7 @@
 | Low-confidence speech → edit before sending | Implemented | – | Compiled | Only when the recognizer reports confidence |
 | Voice barge-in (talk over Zara) | Planned | – | – | Tap the orb/mic to interrupt instead |
 | Gemini Live realtime audio | Planned | – | – | Needs a WebSocket client dependency |
-| Dedicated low-power wake-word engine | Planned | Extra dependency / model | – | Would replace the recogniser loop; needs a library and (for some engines) a licence key |
+| Dedicated low-power wake-word engine (offline, e.g. Vosk/openWakeWord) | Planned | Extra dependency / model | – | Would replace the recogniser loop; needs a library and (for some engines) a licence key |
 | Owner-voice lock | Not planned | – | – | Voice matching is not secure authentication |
 | Languages incl. Manglish / Hinglish | Implemented | Device speech engines | Compiled | Quality depends on installed engines/voices |
 | Persona presets, tone dials, custom text, names | Implemented | – | Compiled | Proactivity/reminders Planned |
@@ -46,6 +48,15 @@
 | Verified outcomes + task journal (6 statuses) | Implemented | – | Compiled | Verification relies on Accessibility |
 | Orb styles: Particles, Fluid, Aurora, Pulse, Waveform | Implemented | – | Compiled | Pure Canvas drawing; still frame with reduce-motion/battery saver |
 | Friendly, renameable voice names | Implemented | – | Compiled | Names are assigned by us (Aria, Nova, …); the phone supplies the actual voices |
+| **Live conversation** (Gemini Live: continuous mic, speak-while-listening, barge-in, no beeps) | Implemented | Microphone, Gemini key, foreground notification | Protocol + WebSocket tested; audio/service compiled only | Needs a Live-capable model/key; uses data and quota; speaker echo depends on the phone (echo guard option) |
+| Live keeps working with the app closed (foreground service) | Implemented | Foreground service (microphone) | Compiled | Android may still stop it on aggressive battery managers; screen-off use needs the wake lock |
+| Always-listening gating (“Hey Zara” handled by the model) | Implemented (opt-in) | Same as Live | Compiled | Streams all microphone audio to Google while on |
+| **Agent mode**: read screen, tap element/point, long-press, swipe, type, press keys, wait | Implemented | Accessibility service, Agent mode on | Compiled | Apps can hide elements; verified via screen-change events; protected apps blocked |
+| Multi-step agent loop (text chat and Live) with a 40-step budget and instant stop | Implemented | – | Compiled | – |
+| Autonomy levels + approvals by notification (Allow/Deny) when the app is closed | Implemented | Notifications | Compiled | No answer in 90 s = Deny |
+| Protected apps list (payments, banking, password managers) | Implemented | – | Compiled | Editable; defaults cover common Indian UPI/banking apps |
+| Permanent signing key via GitHub Secrets | Implemented | Repository secrets | Not yet run in CI | One-time uninstall needed to switch keys |
+| Orbs: Thinking Orbs ×9 (auto by state), fluid sphere (GPU), particle globe | Implemented | – | Orb math golden-tested; shader visually prototyped (NumPy) but **not compiled by Android** | Fluid shader needs Android 13+, else a canvas fallback is used |
 | Hands-free "Hey Zara" (foreground service) | Experimental | Microphone, foreground notification; Display over apps and battery exemption recommended | JVM-tested (phrase matcher) / Compiled | Recogniser loop, not a low-power wake engine: battery use, possible restart beeps, no lock-screen use, restarts only when the app is opened |
 | Floating avatar overlay (8 avatars, edge, opacity, visibility) | Implemented | Display over other apps | Compiled | Foreground-service notification is required |
 | Code Workspace: edit, copy, share, save (SAF), open, open-with, explain | Partial | – | Compiled | No syntax highlighting or diff view yet |

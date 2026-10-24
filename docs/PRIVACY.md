@@ -16,6 +16,13 @@ This describes the code in this repository. It is not a legal privacy policy and
 
 There is **no silent fallback** to another provider. Screen contents are never collected or sent.
 
+## Live conversation and agent mode
+Live streams the microphone to Google's Live API for as long as the conversation is on (a notification is always shown, and you can
+stop it from there). In always-listening mode that includes everything the microphone hears. In agent mode the visible text of
+your screen (never password fields; never protected apps) is sent to your AI provider so it can decide what to tap. Actions that
+send, post, pay or delete ask first (by dialog, or by notification when the app is closed); payment, banking and password apps are
+off-limits. Transcripts of Live turns are stored locally like normal chat.
+
 ## Speech
 Speech recognition and text-to-speech use the phone's installed Android engines. Depending on the device, the recognizer may process audio on its provider's servers — this is controlled by Android/the engine vendor, not by this app. The microphone is used only while a voice session is running; the session stops when the app leaves the screen.
 
