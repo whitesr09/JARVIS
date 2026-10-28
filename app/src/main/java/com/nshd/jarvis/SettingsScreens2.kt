@@ -299,6 +299,12 @@ class AppControlScreen : Screen() {
             else -> "Asks before sending, posting, sharing, paying, deleting and similar. Everything else runs on its own."
         }).apply { setPadding(0, ui.dp(10), 0, 0) })
         col.addView(au, ui.lpm(tp = 10))
+        val tm = ui.card(0)
+        val taskModel = p.s("agent_model")
+        tm.addView(ui.row("code", "Task model", (if (taskModel.isBlank()) "Same as chat model (" + GeminiProvider(act, p).modelName + ")" else taskModel) + " · does the screen work; a fast flash model is best") {
+            act.promptText("Task model (blank = chat model)", "e.g. gemini-2.5-flash", taskModel) { v -> p.put("agent_model", v.trim()); act.rebuildCurrent() }
+        })
+        col.addView(tm, ui.lpm(tp = 10))
         val pr = ui.card(0)
         pr.addView(ui.row("shield", "Protected apps", ProtectedApps.list(p).size.toString() + " apps the agent will never read or operate") {
             act.promptText("Protected app package names", "one per line or comma-separated", ProtectedApps.list(p).joinToString(", ")) { v -> p.put("protected_apps", v) ; act.rebuildCurrent() }

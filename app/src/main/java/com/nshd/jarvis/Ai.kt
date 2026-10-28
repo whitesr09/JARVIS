@@ -54,6 +54,27 @@ object Tools {
         "recent_apps", "scroll_down", "scroll_up", "tap_text", "type_text", "web_search", "set_timer", "set_alarm",
         "dial_number", "navigate_to", "sms_draft", "get_screen", "tap_node", "tap_point", "long_press_node", "swipe", "press_key", "wait")
 
+    /** Quick, single-step actions the voice model may request directly. */
+    val QUICK = setOf("open_app", "play_media", "search_youtube", "open_settings", "whatsapp_draft", "sms_draft", "dial_number",
+        "web_search", "navigate_to", "set_timer", "set_alarm", "press_key", "go_back", "go_home", "recent_apps")
+
+    /** What the Live (voice) model sees: three simple tools. Multi-step screen work is delegated to a fast text model. */
+    fun liveDeclarations(): JSONArray {
+        fun str(d: String) = JSONObject().put("type", "STRING").put("description", d)
+        val quick = JSONObject().put("name", "phone_action")
+            .put("description", "Do ONE quick thing on the phone right now and get the result immediately: open an app, play a song or video in a named app (Spotify, YouTube, YouTube Music…), set a timer or alarm, search the web, navigate somewhere, dial a number, draft a text or WhatsApp message, open a settings page, or press back/home.")
+            .put("parameters", JSONObject().put("type", "OBJECT").put("properties", JSONObject()
+                .put("action", JSONObject().put("type", "STRING").put("enum", JSONArray(QUICK.sorted())).put("description", "Which quick action"))
+                .put("target", str("App name, settings page, or recipient number"))
+                .put("text", str("What to play/search/draft; timer seconds; alarm time HH:MM")))
+                .put("required", JSONArray().put("action")))
+        val task = JSONObject().put("name", "do_task")
+            .put("description", "Hand off a job that needs several steps on the phone screen, e.g. 'message Rahul on WhatsApp saying I'm late', 'find the Wi-Fi password screen', 'order the usual on Swiggy', 'post this on Instagram'. Returns immediately; a phone-operating assistant does the work and you will receive a SYSTEM UPDATE with the result to tell the user.")
+            .put("parameters", JSONObject().put("type", "OBJECT").put("properties", JSONObject().put("goal", str("One clear sentence describing the outcome wanted, with all details (names, text, app)."))).put("required", JSONArray().put("goal")))
+        val stop = JSONObject().put("name", "stop_task").put("description", "Stop the phone task that is currently running (when the user says stop/cancel).")
+        return JSONArray().put(JSONObject().put("functionDeclarations", JSONArray().put(quick).put(task).put(stop)))
+    }
+
     fun geminiDeclaration(): JSONObject = JSONObject()
         .put("name", "device_action")
         .put("description", "Ask the Zara app to perform ONE allow-listed action on the user's phone. The app validates it and may ask the user to confirm. Only call this when the user clearly asked for a phone action.")
@@ -80,7 +101,11 @@ class GeminiProvider(private val ctx: Context, private val prefs: Prefs) : AiPro
     }
     override val id = "gemini"
     override val label = "Gemini"
-    override val modelName: String get() = prefs.s("gemini_model", DEFAULT_MODEL).ifBlank { DEFAULT_MODEL }
+    /** Set by the task agent to use a different (e.g. faster) model than the chat model. */
+    var modelOverride: String? = null
+    /** Ask the model to think as little as possible — tool use is latency-bound. Dropped automatically if the model rejects it. */
+    var thinkingMinimal = false
+    override val modelName: String get() = modelOverride?.takeIf { it.isNotBlank() } ?: prefs.s("gemini_model", DEFAULT_MODEL).ifBlank { DEFAULT_MODEL }
     private fun key() = SecureStore.get(ctx, "gemini_key")
     private fun base(): String {
         val custom = prefs.s("gemini_base").trim().trimEnd('/')
@@ -114,7 +139,15 @@ class GeminiProvider(private val ctx: Context, private val prefs: Prefs) : AiPro
         val b = JSONObject()
             .put("system_instruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
             .put("contents", contents)
-            .put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", maxTokens))
+            .put("generationConfig", JSONObject().put("temperature", 0.7).put("maxOutputTokens", maxTokens).also { g ->
+                if (thinkingMinimal) {
+                    val n = modelName
+                    val tc = when { n.contains("2.5") && !n.contains("pro") -> JSONObject().put("thinkingBudget", 0)
+                                    n.contains("2.5") -> null
+                                    else -> JSONObject().put("thinkingLevel", "low") }
+                    if (tc != null) g.put("thinkingConfig", tc)
+                }
+            })
         if (withTools) b.put("tools", JSONArray().put(JSONObject().put("functionDeclarations", JSONArray().put(Tools.geminiDeclaration()))))
         return b
     }
@@ -133,6 +166,7 @@ class GeminiProvider(private val ctx: Context, private val prefs: Prefs) : AiPro
                 val code = conn.responseCode
                 if (code !in 200..299) {
                     val err = conn.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    if (code == 400 && thinkingMinimal && err.contains("thinking", true) && attempt < 3) { thinkingMinimal = false; continue }   // model doesn't accept it
                     if ((code == 429 || code in 500..599) && attempt < 2 && !cancel.get()) { Thread.sleep(1200); continue }
                     return AiResult(false, Http.friendly(code, err, key))
                 }

@@ -115,17 +115,21 @@ class ZaraAccessibilityService : AccessibilityService() {
     private val snapNodes = ArrayList<AccessibilityNodeInfo>()
 
     /** A compact, numbered description of what is on screen. Password fields are never read. */
-    fun snapshot(maxNodes: Int = 90): Pair<String, String> {
+    fun snapshot(maxNodes: Int = 60): Pair<String, String> {
         val root = rootInActiveWindow ?: return "" to "(no window content available)"
         val pkg = root.packageName?.toString() ?: ""
         snapNodes.clear()
+        var unlabeled = 0
         val sb = StringBuilder()
         fun walk(n: AccessibilityNodeInfo?, depth: Int) {
-            if (n == null || depth > 40 || snapNodes.size >= maxNodes || sb.length > 7000) return
+            if (n == null || depth > 40 || snapNodes.size >= maxNodes || sb.length > 3200) return
             val cls = (n.className?.toString() ?: "").substringAfterLast('.')
             val txt = n.text?.toString().orEmpty().replace('\n', ' ').take(80)
             val desc = n.contentDescription?.toString().orEmpty().replace('\n', ' ').take(80)
-            val interesting = n.isVisibleToUser && (txt.isNotEmpty() || desc.isNotEmpty() || n.isClickable || n.isEditable || n.isScrollable)
+            val labeled = txt.isNotEmpty() || desc.isNotEmpty()
+            val icon = !labeled && n.isClickable && !n.isEditable && !n.isScrollable
+            if (icon) unlabeled++
+            val interesting = n.isVisibleToUser && (labeled || n.isEditable || n.isScrollable || (icon && unlabeled <= 8))
             if (interesting) {
                 val r = Rect(); n.getBoundsInScreen(r)
                 val id = snapNodes.size; snapNodes.add(n)

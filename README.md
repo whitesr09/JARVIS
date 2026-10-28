@@ -14,6 +14,7 @@ A native Kotlin Android app: a voice-first AI companion and assistant with an an
 
 ## Live, agent and permanent signing
 - **Live conversation** (mic button / orb): the microphone stays open, Zara thinks and speaks while you talk, you can interrupt, and she can operate your phone — even with the app closed. See *Settings → Voice Setup*.
+- **Task delegation:** the voice model answers instantly and hands multi-step phone jobs to a fast text model; you keep talking and she reports the result.
 - **Agent mode** (*Settings → App Control*): the AI looks at the screen and taps, swipes and types like a person, one verified step at a time, with approvals, protected apps and a 40-step budget.
 - **Permanent signing:** see `docs/SIGNING.md` so new APKs install over old ones.
 

@@ -11,8 +11,8 @@ android {
         applicationId = "com.nshd.jarvis"
         minSdk = 26
         targetSdk = 28
-        versionCode = 5
-        versionName = "0.4.0"
+        versionCode = 6
+        versionName = "0.5.0"
     }
 
     // Permanent signing: when the key is supplied (GitHub Secrets → environment), every build is signed with the

@@ -161,7 +161,7 @@ class HomeScreen : Screen(), BrainListener {
         val txt: String
         when (act.brain.orb) {
             OrbState.ERROR -> txt = "Needs attention"
-            OrbState.EXECUTING -> txt = "Working on it…"
+            OrbState.EXECUTING -> txt = if (act.liveOn() && LiveBus.note.isNotBlank()) LiveBus.note.take(34) else "Working on it…"
             OrbState.THINKING -> txt = "Thinking…"
             OrbState.SPEAKING -> txt = "Speaking · tap to interrupt"
             OrbState.LISTENING -> txt = if (v.state == ZVoice.VState.HEARING) "Hearing you…" else "Listening…"

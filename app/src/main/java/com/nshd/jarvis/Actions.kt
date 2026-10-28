@@ -55,13 +55,11 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
         (if (MainActivity.visible != null) ctx else (ZaraAccessibilityService.instance ?: ctx)).startActivity(i)
     }
 
-    fun fromJson(o: JSONObject?): ActionRequest? {
+    fun fromJson(o: JSONObject?, allowed: Set<String> = Tools.ACTIONS.toSet()): ActionRequest? {
         if (o == null) return null
-        val a = o.optString("action")
-        if (a !in Tools.ACTIONS) return null
-        val extra = HashMap<String, String>()
-        for (k in listOf("id", "x", "y", "x2", "y2", "duration_ms", "key", "direction")) if (o.has(k)) extra[k] = o.opt(k).toString()
-        return ActionRequest(a, o.optString("target").take(120), o.optString("text").take(600), extra)
+        val m = HashMap<String, String>()
+        for (k in o.keys()) m[k] = o.opt(k)?.toString().orEmpty()
+        return ToolArgs.normalize(o.optString("action"), m, allowed)
     }
 
     private fun blocked(s: TaskStatus, msg: String, hint: String = "") = ActionResult(s, msg, hint)
@@ -187,9 +185,25 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
         return Preflight(risk, preview + context, ttl, null)
     }
 
+    private val observeActions = setOf("open_app", "play_media", "search_youtube", "open_settings", "go_back", "go_home", "recent_apps",
+        "scroll_down", "scroll_up", "tap_text", "type_text", "tap_node", "tap_point", "long_press_node", "swipe", "press_key", "web_search", "navigate_to")
+
+    /** Act-and-observe: when Agent mode is on, the result already contains the new screen, saving a whole model round trip. */
+    private fun observe(r: ActionRequest, res: ActionResult, done: (ActionResult) -> Unit) {
+        val svc = ZaraAccessibilityService.instance
+        if (r.action !in observeActions || svc == null || !prefs.b("agent_mode", false) || res.data.isNotBlank() ||
+            res.status == TaskStatus.FAILED || res.status == TaskStatus.BLOCKED_BY_PERMISSION || r.extra["observe"] == "false") return done(res)
+        val fg = svc.foregroundPackage()
+        if (fg != null && fg in ProtectedApps.list(prefs)) return done(res.copy(data = "(a protected app is on screen — its contents are not shared)"))
+        settle(svc, 0L, 140, 700) {
+            val (pkg, text) = svc.snapshot(60)
+            done(res.copy(data = "app: $pkg\n$text"))
+        }
+    }
+
     fun execute(r: ActionRequest, done: (ActionResult) -> Unit) {
         main.post {
-            try { run(r, done) } catch (e: Exception) {
+            try { run(r) { res -> observe(r, res, done) } } catch (e: Exception) {
                 done(ActionResult(TaskStatus.FAILED, "That didn't work on this device.", "Reason: " + e.javaClass.simpleName))
             }
         }
@@ -264,7 +278,7 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
                 val (pkg, text) = svc.snapshot()
                 done(ActionResult(TaskStatus.COMPLETED, "Screen read.", data = "app: $pkg\n$text"))
             }
-            "wait" -> main.postDelayed({ done(ActionResult(TaskStatus.COMPLETED, "Waited.")) }, (r.extra["duration_ms"]?.toLongOrNull() ?: 1000L).coerceIn(200L, 5000L))
+            "wait" -> main.postDelayed({ done(ActionResult(TaskStatus.COMPLETED, "Waited.")) }, (r.extra["duration_ms"]?.toLongOrNull() ?: 600L).coerceIn(150L, 5000L))
             "press_key" -> {
                 val svc = ZaraAccessibilityService.instance ?: return done(ActionResult(TaskStatus.BLOCKED_BY_PERMISSION, "Accessibility access isn't enabled."))
                 val t0 = SystemClock.uptimeMillis()
@@ -342,42 +356,42 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
         val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).setPackage(pkg).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             .putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*").putExtra(SearchManager.QUERY, query)
         try { launch(i) } catch (_: Exception) {
-            ctx.packageManager.getLaunchIntentForPackage(pkg)?.let { launch(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+            ctx.packageManager.getLaunchIntentForPackage(pkg)?.let { launch(it) }
             return done(ActionResult(TaskStatus.NEEDS_USER_ACTION, "$label opened, but it doesn't accept play requests from other apps. Search for " + (if (query.isBlank()) "something" else "“$query”") + " there yourself."))
         }
         val what = if (query.isBlank()) "music" else "“$query”"
-        main.postDelayed({
-            val svc = ZaraAccessibilityService.instance
-            val fg = svc?.foregroundPackage()
-            when {
-                svc == null -> done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "I asked $label to play $what. I can't confirm playback because Accessibility is off.", "Enable it under App Control for verified results."))
-                fg == pkg && svc.hasText(listOf("Pause")) -> done(ActionResult(TaskStatus.COMPLETED, "Playing $what in $label."))
-                else -> done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "I asked $label to play $what, but I couldn't see it playing.", "It may still be loading, need you to sign in, or have shown a prompt."))
-            }
-        }, 3500)
+        val svc = ZaraAccessibilityService.instance
+            ?: return done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "I asked $label to play $what. I can't confirm playback because Accessibility is off.", "Enable it under App Control for verified results."))
+        val start = SystemClock.uptimeMillis()
+        fun poll() {
+            if (svc.foregroundPackage() == pkg && svc.hasText(listOf("Pause"))) return done(ActionResult(TaskStatus.COMPLETED, "Playing $what in $label."))
+            if (SystemClock.uptimeMillis() - start >= 3200) return done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "I asked $label to play $what, but I couldn't see it playing yet.", "It may still be loading, need you to sign in, or have shown a prompt — look at the screen."))
+            main.postDelayed({ poll() }, 250)
+        }
+        main.postDelayed({ poll() }, 350)
     }
 
-    /** YouTube has no play-from-search hook, so: open results, then (with Accessibility) tap the top real result. */
+    /** YouTube has no play-from-search hook, so: open results, then (with Accessibility) tap the top real result as soon as it appears. */
     private fun playYoutube(query: String, done: (ActionResult) -> Unit) {
         val uri = Uri.parse("https://www.youtube.com/results?search_query=" + URLEncoder.encode(query, "UTF-8"))
         val yt = Intent(Intent.ACTION_VIEW, uri).setPackage("com.google.android.youtube").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        try { launch(yt) } catch (_: Exception) { launch(Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        try { launch(yt) } catch (_: Exception) { launch(Intent(Intent.ACTION_VIEW, uri)) }
         val svc = ZaraAccessibilityService.instance
             ?: return done(ActionResult(TaskStatus.NEEDS_USER_ACTION, "YouTube search for “$query” is open. Turn on Accessibility (Settings → App Control) and I'll start the top result for you; for now, tap a video.", "Starting a video needs Accessibility."))
         var tries = 0
         val skip = Regex("(?i)sponsored|advertisement|\\bad\\b\\s*[·•-]")
+        fun verify(since: Long) {
+            if (svc.hasText(listOf("Minimize", "Pause video", "Collapse", "Pause"))) return done(ActionResult(TaskStatus.COMPLETED, "Playing the top YouTube result for “$query”."))
+            if (SystemClock.uptimeMillis() - since >= 2400) return done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "I tapped the top result for “$query”, but I couldn't confirm it's playing.", "YouTube may still be loading or showing a prompt."))
+            main.postDelayed({ verify(since) }, 200)
+        }
         fun attempt() {
             val o = svc.clickFirstMatching(Regex("(?i)play video|play short"), skip)
-            if (o.dispatched) {
-                main.postDelayed({
-                    if (svc.hasText(listOf("Minimize", "Pause video", "Collapse", "Pause")))
-                        done(ActionResult(TaskStatus.COMPLETED, "Playing the top YouTube result for “$query”."))
-                    else done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "I tapped the top result for “$query”, but I couldn't confirm it's playing.", "YouTube may still be loading or showing a prompt."))
-                }, 3200)
-            } else if (++tries < 9) main.postDelayed({ attempt() }, 700)
+            if (o.dispatched) main.postDelayed({ verify(SystemClock.uptimeMillis()) }, 300)
+            else if (++tries < 28) main.postDelayed({ attempt() }, 250)
             else done(ActionResult(TaskStatus.NEEDS_USER_ACTION, "I opened the results for “$query” but couldn't find a video to tap. Please pick one.", o.note))
         }
-        main.postDelayed({ attempt() }, 2200)
+        main.postDelayed({ attempt() }, 450)
     }
 
     private fun openApp(name: String, done: (ActionResult) -> Unit) {
@@ -392,22 +406,36 @@ class ActionExecutor(private val ctx: Context, private val prefs: Prefs) {
         verifyForeground({ it == pkg }, "Opened $label and confirmed it's on screen.", "Asked Android to open $label.", done)
     }
 
+    /** Waits until the screen changed after [t0] and has been quiet for [quietMs] — or [maxMs] passed. Never a fixed sleep. */
+    private fun settle(svc: ZaraAccessibilityService?, t0: Long, quietMs: Long = 160, maxMs: Long = 900, then: (changed: Boolean) -> Unit) {
+        if (svc == null) return then(false)
+        val start = SystemClock.uptimeMillis()
+        fun poll() {
+            val now = SystemClock.uptimeMillis()
+            val changed = svc.lastChange >= t0
+            if ((changed && now - svc.lastChange >= quietMs) || now - start >= maxMs) then(changed) else main.postDelayed({ poll() }, 40)
+        }
+        main.postDelayed({ poll() }, 40)
+    }
+
+    /** Continues the moment [pred] holds for the foreground app (polled every 80 ms), or gives up after 3 s. */
     private fun verifyForeground(pred: (String) -> Boolean, ok: String, fallback: String, done: (ActionResult) -> Unit) {
-        main.postDelayed({
-            val svc = ZaraAccessibilityService.instance
-            val fg = svc?.foregroundPackage()
-            when {
-                svc == null -> done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "$fallback I can't confirm what's on screen because Accessibility access is off.", "Enable it under App Control for verified results."))
-                fg != null && pred(fg) -> done(ActionResult(TaskStatus.COMPLETED, ok))
-                else -> done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "$fallback I didn't see it come to the front.", "It may still be loading or the app may have blocked it."))
-            }
-        }, 1600)
+        val svc = ZaraAccessibilityService.instance
+            ?: return done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "$fallback I can't confirm what's on screen because Accessibility access is off.", "Enable it under App Control for verified results."))
+        val start = SystemClock.uptimeMillis()
+        fun poll() {
+            val fg = svc.foregroundPackage()
+            if (fg != null && pred(fg)) return done(ActionResult(TaskStatus.COMPLETED, ok))
+            if (SystemClock.uptimeMillis() - start >= 3000) return done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "$fallback I didn't see it come to the front.", "It may still be loading or the app may have blocked it."))
+            main.postDelayed({ poll() }, 80)
+        }
+        main.postDelayed({ poll() }, 80)
     }
 
     private fun verifyChange(svc: ZaraAccessibilityService, t0: Long, ok: String, fallback: String, done: (ActionResult) -> Unit) {
-        main.postDelayed({
-            if (svc.lastChange >= t0) done(ActionResult(TaskStatus.COMPLETED, ok))
+        settle(svc, t0) { changed ->
+            if (changed) done(ActionResult(TaskStatus.COMPLETED, ok))
             else done(ActionResult(TaskStatus.COULD_NOT_VERIFY, "$fallback I didn't observe the screen change.", "The app may not report changes."))
-        }, 1100)
+        }
     }
 }

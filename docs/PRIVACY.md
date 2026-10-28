@@ -23,6 +23,9 @@ your screen (never password fields; never protected apps) is sent to your AI pro
 send, post, pay or delete ask first (by dialog, or by notification when the app is closed); payment, banking and password apps are
 off-limits. Transcripts of Live turns are stored locally like normal chat.
 
+## Task agent
+When you ask for a multi-step phone job, a text model (your Gemini key, the model set under Settings → App Control → Task model) receives the goal and the visible text of the current screen after each step — never password fields and never protected apps — and decides the next tap. Only the newest screen is kept in the conversation. Nothing is sent to anyone else.
+
 ## Speech
 Speech recognition and text-to-speech use the phone's installed Android engines. Depending on the device, the recognizer may process audio on its provider's servers — this is controlled by Android/the engine vendor, not by this app. The microphone is used only while a voice session is running; the session stops when the app leaves the screen.
 

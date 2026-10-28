@@ -2,6 +2,8 @@
 
 **Verification key.** *Compiled* = Kotlin sources compile with kotlinc 2.0.20 against the android-34 `android.jar` (not a full Gradle/AGP build). *JVM-tested* = executed on a JVM test harness. *CI* = GitHub Actions build — **not yet run for this change**. *Device* = tested on a real phone — **nothing in this table has been tested on a device yet**.
 
+**v0.5.0 note.** Speed/reliability work, verified as follows: agent loop (**8 behaviour tests**: step budget, stuck detection, cancellation, screen pruning, permission/decline handling), tolerant tool arguments (**19 checks**). Event-driven waits, act-and-observe and the task agent's network/UI side are compiled only — **not yet timed on a phone**, so no speed numbers are claimed.
+
 **v0.4.0 note.** New in v0.4.0 and verified as follows: Thinking Orbs port (**golden parity: 72 frames / 11,288 dots, max error 5e-7**), WebSocket client (**12 checks against a real server**), Live protocol (**17 checks against a spec-following mock server**), history fix (**regression test**). Audio capture/playback, the Live service, agent actions and the fluid shader are compiled only — **nothing has run on a phone yet**.
 
 **v0.3.0 note.** Features added in v0.3.0 (media playback, orb styles, voice names, wake phrase) are compiled but not device-tested.
@@ -51,6 +53,9 @@
 | **Live conversation** (Gemini Live: continuous mic, speak-while-listening, barge-in, no beeps) | Implemented | Microphone, Gemini key, foreground notification | Protocol + WebSocket tested; audio/service compiled only | Needs a Live-capable model/key; uses data and quota; speaker echo depends on the phone (echo guard option) |
 | Live keeps working with the app closed (foreground service) | Implemented | Foreground service (microphone) | Compiled | Android may still stop it on aggressive battery managers; screen-off use needs the wake lock |
 | Always-listening gating (“Hey Zara” handled by the model) | Implemented (opt-in) | Same as Live | Compiled | Streams all microphone audio to Google while on |
+| **Task delegation**: voice model calls `do_task`, a fast text model operates the phone, the result is spoken when done | Implemented | Gemini key, Accessibility, Agent mode | Loop logic unit-tested; network/UI compiled only | Needs a model that supports function calling; one task at a time |
+| Event-driven waits + act-and-observe (each action returns the new screen) | Implemented | Accessibility, Agent mode | Compiled | Apps that don't emit accessibility events fall back to a short timeout |
+| Tolerant tool arguments (`app`/`query`/`launch`…) | Implemented | – | JVM-tested | – |
 | **Agent mode**: read screen, tap element/point, long-press, swipe, type, press keys, wait | Implemented | Accessibility service, Agent mode on | Compiled | Apps can hide elements; verified via screen-change events; protected apps blocked |
 | Multi-step agent loop (text chat and Live) with a 40-step budget and instant stop | Implemented | – | Compiled | – |
 | Autonomy levels + approvals by notification (Allow/Deny) when the app is closed | Implemented | Notifications | Compiled | No answer in 90 s = Deny |

@@ -338,6 +338,7 @@ class VoiceSetupScreen : Screen() {
         val lv = ui.card(0)
         val lm = p.s("live_model", LiveModels.DEFAULT).ifBlank { LiveModels.DEFAULT }
         lv.addView(ui.row("key", "Live model", lm) { act.promptText("Live model", LiveModels.DEFAULT, lm) { v -> p.put("live_model", v.trim()); act.rebuildCurrent() } })
+        lv.addView(ui.dim("Some Live models (for example 3.1 Flash Live) answer tools one at a time and stay silent while one runs. Zara hands longer phone jobs to a separate task model, so you can keep talking while it works.", 12f).apply { setPadding(ui.dp(14), 0, ui.dp(14), ui.dp(10)) })
         lv.addView(ui.divider())
         lv.addView(ui.row("globe", "Find Live models for my key", "Asks Google which models support live voice and picks the newest") {
             act.toast("Asking Google…")

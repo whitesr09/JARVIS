@@ -65,6 +65,7 @@ class LiveSession(private val ctx: Context, private val prefs: Prefs, private va
     @Volatile private var lastUserAt = 0L
     private val convo get() = prefs.i("active_convo", 1)
     private val pendingCalls = HashSet<String>()
+    private val taskAgent = TaskAgent(ctx, prefs, runner)
 
     fun micGranted() = ctx.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
@@ -155,13 +156,17 @@ class LiveSession(private val ctx: Context, private val prefs: Prefs, private va
     private fun buildSetup(): String {
         val mems = if (prefs.b("memory_on", true)) db.memories().take(30).map { it.fact } else emptyList()
         val gating = prefs.b("live_gating", false)
+        val svcOn = ZaraAccessibilityService.instance != null
         var sys = Persona.system(prefs, mems, false) +
             "\nYou are in a LIVE voice conversation. Speak naturally and briefly, never use markdown or lists, and react to being interrupted gracefully.\n" +
-            "You can operate the user's phone with the device_action tool. For anything unfamiliar, first call get_screen to see numbered elements, then act with tap_node / tap_point / swipe / type_text / press_key, " +
-            "then call get_screen again to check the result before continuing. Do one step at a time, say in a few words what you're doing, never claim success unless the tool result says COMPLETED, " +
-            "and if a tool says NEEDS_USER_ACTION or the user declined, tell them plainly and stop. Never operate payment, banking or password apps, and never type passwords."
+            "You can control the user's phone. For ONE quick thing (open an app, play something in a named app, timer, alarm, web search, navigate, dial, draft a message, open a settings page, back/home) call phone_action. " +
+            "For anything that needs several steps on the screen call do_task with one clear sentence containing every detail — it returns at once, so say a few words like “on it”, keep chatting, and you will later receive a SYSTEM UPDATE with the result to tell the user in one short sentence. " +
+            "Never claim a phone action worked unless a tool result or SYSTEM UPDATE says so. If a result is BLOCKED_BY_PERMISSION, tell the user the exact setting from its hint. If the user says stop or cancel, call stop_task. " +
+            "Never operate payment, banking or password apps, and never type passwords.\n" +
+            "Phone-control status right now: app control " + (if (prefs.b("app_control", false)) "ON" else "OFF (user must enable “Allow Zara to act on my phone”)") +
+            ", agent mode " + (if (prefs.b("agent_mode", false)) "ON" else "OFF") + ", accessibility " + (if (svcOn) "ON" else "OFF") + "."
         if (gating) sys += "\nAlways-listening mode: stay completely silent unless the user addresses you (for example “Hey ${Persona.name(prefs)}”) or is clearly continuing a conversation with you from the last ~30 seconds. Ignore TV, other people and background speech."
-        val tools = if (prefs.b("app_control", false)) JSONArray().put(JSONObject().put("functionDeclarations", JSONArray().put(Tools.geminiDeclaration()))) else null
+        val tools = Tools.liveDeclarations()
         return LiveProtocol.setup(prefs.s("live_model", LiveModels.DEFAULT).ifBlank { LiveModels.DEFAULT }, sys, prefs.s("live_voice", "Aoede"), tools, gating, handle)
     }
 
@@ -175,7 +180,7 @@ class LiveSession(private val ctx: Context, private val prefs: Prefs, private va
             }
             is LiveEvent.InputText -> main.post {
                 lastUserAt = System.currentTimeMillis()
-                if (newUserTurn) { newUserTurn = false; AgentGuard.reset(); if (botBuf.isNotEmpty()) flushTranscripts() }
+                if (newUserTurn) { newUserTurn = false; if (!taskAgent.running) AgentGuard.reset(); if (botBuf.isNotEmpty()) flushTranscripts() }
                 userBuf.append(e.text); LiveBus.user(e.text)
                 if (LiveBus.state == LiveState.LISTENING) LiveBus.state(LiveState.THINKING)
             }
@@ -205,14 +210,40 @@ class LiveSession(private val ctx: Context, private val prefs: Prefs, private va
             if (hint.isNotBlank()) r.put("hint", hint)
             if (screen.isNotBlank()) r.put("screen", screen)
             ws?.sendText(LiveProtocol.toolResponse(c.id, c.name, r))
-            if (active && LiveBus.state == LiveState.WORKING) LiveBus.state(if (playing) LiveState.SPEAKING else LiveState.THINKING)
+            if (active && LiveBus.state == LiveState.WORKING && !taskAgent.running) LiveBus.state(if (playing) LiveState.SPEAKING else LiveState.THINKING)
         }
-        val req = if (c.name == "device_action") runner.executor.fromJson(c.args) else null
-        if (req == null) { reply("FAILED", "Unknown or invalid action request."); return }
-        LiveBus.state(LiveState.WORKING, runner.executor.title(req))
-        runner.run(req) { res, title ->
-            LiveBus.task(title, res)
-            reply(res.status.name, res.message, res.hint, res.data)
+        when (c.name) {
+            "phone_action" -> {
+                val parsed = runner.executor.fromJson(c.args, Tools.QUICK)
+                if (parsed == null) { reply("FAILED", "That isn't a quick action. Use do_task for multi-step jobs."); return }
+                val req = parsed.copy(extra = parsed.extra + ("observe" to "false"))    // the voice model never needs the screen text
+                LiveBus.state(LiveState.WORKING, runner.executor.title(req))
+                runner.run(req) { res, title ->
+                    LiveBus.task(title, res)
+                    reply(res.status.name, res.message, res.hint)
+                }
+            }
+            "do_task" -> {
+                val goal = c.args.optString("goal").ifBlank { c.args.optString("text") }.trim()
+                when {
+                    goal.isEmpty() -> reply("FAILED", "No goal was given.")
+                    !prefs.b("app_control", false) -> reply("BLOCKED_BY_PERMISSION", "App control is off.", "Turn on “Allow Zara to act on my phone” in Settings → App Control & Hands-Free.")
+                    taskAgent.running -> reply("BUSY", "A phone task is already running. Wait for its update, or call stop_task.")
+                    else -> {
+                        reply("STARTED", "Started. Tell the user in a few words that you're on it. You will get a SYSTEM UPDATE with the result — don't wait or ask questions meanwhile.")
+                        LiveBus.state(LiveState.WORKING, "Working: " + goal.take(28))
+                        taskAgent.run(goal, { step -> if (active) LiveBus.state(LiveState.WORKING, step) }) { out ->
+                            if (active) {
+                                ws?.sendText(LiveProtocol.text("[SYSTEM UPDATE — not the user speaking] The phone task \"" + goal.take(80) + "\" " +
+                                    (if (out.ok) "finished" else "did NOT finish") + " after " + out.steps + " steps. Result: " + out.summary + " — tell the user in one short sentence."))
+                                LiveBus.state(if (playing) LiveState.SPEAKING else LiveState.THINKING)
+                            }
+                        }
+                    }
+                }
+            }
+            "stop_task" -> { AgentGuard.cancel(); reply("COMPLETED", if (taskAgent.running) "Stopping the phone task." else "No phone task was running.") }
+            else -> reply("FAILED", "Unknown tool.")
         }
     }
 

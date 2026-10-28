@@ -198,3 +198,54 @@ object HistoryBuilder {
         return out
     }
 }
+
+/** Forgiving tool-argument handling: models often say "app"/"query"/"launch" instead of our exact names. Pure Kotlin. */
+object ToolArgs {
+    private val ACTION_ALIASES = mapOf(
+        "open" to "open_app", "launch" to "open_app", "launch_app" to "open_app", "start_app" to "open_app", "open_application" to "open_app",
+        "play" to "play_media", "play_music" to "play_media", "play_song" to "play_media", "play_video" to "play_media",
+        "search" to "web_search", "google" to "web_search", "search_web" to "web_search", "web" to "web_search",
+        "click" to "tap_text", "tap" to "tap_text", "press_button" to "tap_text", "click_text" to "tap_text",
+        "type" to "type_text", "enter_text" to "type_text", "input_text" to "type_text", "write_text" to "type_text",
+        "read_screen" to "get_screen", "screen" to "get_screen", "observe" to "get_screen", "look" to "get_screen", "screenshot" to "get_screen",
+        "back" to "go_back", "home" to "go_home", "recents" to "recent_apps",
+        "call" to "dial_number", "dial" to "dial_number", "navigate" to "navigate_to", "directions" to "navigate_to",
+        "timer" to "set_timer", "alarm" to "set_alarm", "sms" to "sms_draft", "text_message" to "sms_draft",
+        "whatsapp" to "whatsapp_draft", "settings" to "open_settings")
+    private val TARGET_KEYS = listOf("target", "app", "app_name", "application", "name", "label", "element", "button", "platform", "service")
+    private val TEXT_KEYS = listOf("text", "query", "message", "content", "song", "title", "value", "keyword", "input", "phrase", "artist", "video", "search_query", "goal")
+    private val EXTRA_KEYS = listOf("id", "x", "y", "x2", "y2", "duration_ms", "key", "direction")
+
+    private fun secondsOf(s: String): Int? {
+        s.trim().toIntOrNull()?.let { return it }
+        val m = Regex("(?i)(\\d+(?:\\.\\d+)?)\\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\\b").find(s) ?: return null
+        val n = m.groupValues[1].toDouble(); val u = m.groupValues[2].lowercase()
+        return (n * if (u.startsWith("h")) 3600 else if (u.startsWith("m")) 60 else 1).toInt()
+    }
+
+    private fun clockOf(s: String): String? {
+        val m = Regex("(?i)(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?").find(s.trim()) ?: return null
+        var h = m.groupValues[1].toInt(); val mi = m.groupValues[2].ifEmpty { "0" }.toInt(); val ap = m.groupValues[3].lowercase()
+        if (ap == "pm" && h < 12) h += 12; if (ap == "am" && h == 12) h = 0
+        return if (h in 0..23 && mi in 0..59) "%02d:%02d".format(h, mi) else null
+    }
+
+    fun normalize(rawAction: String, args: Map<String, String>, allowed: Set<String>): ActionRequest? {
+        val key = rawAction.trim().lowercase().replace(' ', '_').replace('-', '_')
+        var action = if (key in allowed) key else ACTION_ALIASES[key]?.takeIf { it in allowed } ?: (if (key == "scroll") "scroll_down" else null) ?: return null
+        val get = { k: String -> args[k]?.takeIf { it.isNotBlank() && it != "null" } }
+        var target = TARGET_KEYS.firstNotNullOfOrNull { get(it) } ?: ""
+        var text = TEXT_KEYS.firstNotNullOfOrNull { get(it) } ?: ""
+        val extra = HashMap<String, String>()
+        for (k in EXTRA_KEYS) get(k)?.let { extra[k] = if (k != "key" && k != "direction") it.removeSuffix(".0") else it }
+        if (key == "scroll" && (extra["direction"] ?: target).lowercase().startsWith("up")) action = "scroll_up"
+        if (action == "scroll_down" || action == "scroll_up") if ((extra["direction"] ?: "").lowercase().startsWith("up")) action = "scroll_up"
+        if (action == "press_key" && !extra.containsKey("key") && target.isNotEmpty()) extra["key"] = target
+        if (key in setOf("back", "home", "recents")) { /* handled by alias → go_back / go_home / recent_apps */ }
+        if (action == "set_timer") text = secondsOf(text.ifEmpty { target })?.toString() ?: text
+        if (action == "set_alarm") text = clockOf(text.ifEmpty { target }) ?: text
+        if (action == "dial_number" || action == "sms_draft") { if (action == "dial_number" && text.isEmpty()) text = target }
+        if (action == "web_search" || action == "navigate_to" || action == "type_text") { if (text.isEmpty()) text = target }
+        return ActionRequest(action, target.take(120), text.take(600), extra)
+    }
+}

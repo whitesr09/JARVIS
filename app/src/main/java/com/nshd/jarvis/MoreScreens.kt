@@ -38,6 +38,8 @@ class ActivityScreen : Screen() {
 
         col.addView(ui.section("Release notes"))
         col.addView(ui.card(16).apply {
+            addView(ui.tv("0.5.0 — faster, more reliable phone actions", 14f, t.text, true))
+            addView(ui.dim("• Actions continue the instant the screen settles (no fixed 1–3 s sleeps)\n• Every action returns the fresh screen, saving a model round trip\n• Multi-step jobs go to a fast task model while the voice keeps chatting, then she tells you the result\n• Tolerant tool arguments, compact screens, stuck/step-limit protection and a live progress line", 13f).apply { setPadding(0, ui.dp(8), 0, ui.dp(14)) })
             addView(ui.tv("0.4.0 — Live, agent mode, new orbs", 14f, t.text, true))
             addView(ui.dim("• Live conversation: mic stays open, speak while she thinks, interrupt any time, works with the app closed\n• Agent mode: the AI reads the screen and operates any app step by step, with approvals and protected apps\n• Fixed: after one YouTube command every later message re-ran it\n• Twelve orbs incl. the nine Thinking Orbs designs and a GPU fluid sphere\n• Permanent signing key (updates install over old builds)", 13f).apply { setPadding(0, ui.dp(8), 0, ui.dp(14)) })
             addView(ui.tv("0.3.0 — play anything, orb styles, Hey Zara", 14f, t.text, true))
